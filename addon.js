@@ -662,6 +662,10 @@ async function getStreamsFast(type, id, options = {}) {
   const overallTimeoutMs = Number(options.overallTimeoutMs || FAST_OVERALL_TIMEOUT_MS);
   const entries = selectedProviderEntries(options.providerIds);
   const collected = [];
+  let resolveEarly;
+  const earlyEnough = new Promise((resolve) => {
+    resolveEarly = resolve;
+  });
 
   const pending = entries.map((provider, index) => {
     const providerGetStreams = loadProvider(provider);
@@ -678,6 +682,9 @@ async function getStreamsFast(type, id, options = {}) {
       }))
       .then((result) => {
         collected.push(...result.streams);
+        if (collected.length >= minStreams) {
+          resolveEarly("min-streams");
+        }
         return result;
       })
       .catch((error) => {
@@ -688,10 +695,11 @@ async function getStreamsFast(type, id, options = {}) {
 
   const settled = await Promise.race([
     Promise.allSettled(pending),
+    earlyEnough,
     new Promise((resolve) => setTimeout(() => resolve(null), overallTimeoutMs))
   ]);
 
-  if (settled && collected.length < minStreams) {
+  if (Array.isArray(settled) && collected.length < minStreams) {
     for (const result of settled) {
       if (result.status === "fulfilled") {
         collected.push(...result.value.streams);
