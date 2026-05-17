@@ -230,6 +230,19 @@ function matchesProfile(stream, profile) {
   return true;
 }
 
+function profileFallbacks(profile) {
+  if (profile === "1080p") {
+    return [
+      (stream) => /\b1080p?\b|1080/i.test(streamText(stream)),
+      (stream) => /\b720p?\b|720/i.test(streamText(stream)),
+      (stream) => /\b480p?\b|480/i.test(streamText(stream))
+    ];
+  }
+  return [
+    (stream) => matchesProfile(stream, profile)
+  ];
+}
+
 function pickStream(streams, profile, slot) {
   const candidates = rankStreams(streams, profile);
 
@@ -623,8 +636,18 @@ async function handleEmbyPlayback(request, response, streamRequest) {
     providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS,
     providerIds: EMBY_PROVIDER_IDS
   });
-  const rankedStreams = rankStreams(streams, profile);
-  const validation = await validateRankedStreams(rankedStreams, Math.max(0, slot - 1));
+  let validation = { validated: [], errors: [] };
+  let rankedStreams = [];
+  for (const fallback of profileFallbacks(profile)) {
+    rankedStreams = rankStreams(streams.filter(fallback), profile);
+    if (rankedStreams.length === 0) {
+      continue;
+    }
+    validation = await validateRankedStreams(rankedStreams, Math.max(0, slot - 1));
+    if (validation.validated.length > 0) {
+      break;
+    }
+  }
   const selectedIndex = Math.min(Math.max(slot - 1, 0), validation.validated.length - 1);
   const selected = validation.validated[selectedIndex];
 
