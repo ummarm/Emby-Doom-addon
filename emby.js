@@ -50,6 +50,8 @@ const PASS_THROUGH_HEADERS = [
   "last-modified"
 ];
 
+const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 10000);
+
 function streamText(stream) {
   return [
     stream.name,
@@ -92,17 +94,22 @@ function qualityScore(text, profile) {
 }
 
 function pickStream(streams, profile, slot) {
-  const candidates = streams
-    .filter((stream) => stream && stream.url && !REJECT_WORDS.some((word) => streamText(stream).includes(word)))
-    .map((stream) => ({ stream, score: qualityScore(streamText(stream), profile) }))
-    .sort((a, b) => b.score - a.score);
+  const candidates = rankStreams(streams, profile);
 
   if (candidates.length === 0) {
     return null;
   }
 
   const index = Math.min(Math.max(slot - 1, 0), candidates.length - 1);
-  return candidates[index].stream;
+  return candidates[index];
+}
+
+function rankStreams(streams, profile) {
+  return streams
+    .filter((stream) => stream && stream.url && !REJECT_WORDS.some((word) => streamText(stream).includes(word)))
+    .map((stream) => ({ stream, score: qualityScore(streamText(stream), profile) }))
+    .sort((a, b) => b.score - a.score)
+    .map((candidate) => candidate.stream);
 }
 
 function requestHeadersForStream(stream, incomingRequest) {
@@ -142,23 +149,23 @@ function writeProxyHeaders(response, upstreamResponse) {
 
 async function proxySelectedStream(request, response, stream) {
   const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_OPEN_TIMEOUT_MS);
   request.on("close", () => controller.abort());
 
-  const upstreamResponse = await fetch(stream.url, {
-    method: request.method === "HEAD" ? "HEAD" : "GET",
-    headers: requestHeadersForStream(stream, request),
-    redirect: "follow",
-    signal: controller.signal
-  });
+  let upstreamResponse;
+  try {
+    upstreamResponse = await fetch(stream.url, {
+      method: request.method === "HEAD" ? "HEAD" : "GET",
+      headers: requestHeadersForStream(stream, request),
+      redirect: "follow",
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!upstreamResponse.ok) {
-    const text = await upstreamResponse.text().catch(() => "");
-    response.writeHead(502, {
-      "Access-Control-Allow-Origin": "*",
-      "Content-Type": "text/plain; charset=utf-8"
-    });
-    response.end(`Provider returned HTTP ${upstreamResponse.status}\n${text.slice(0, 500)}`);
-    return;
+    throw new Error(`Provider returned HTTP ${upstreamResponse.status}`);
   }
 
   writeProxyHeaders(response, upstreamResponse);
@@ -171,14 +178,43 @@ async function proxySelectedStream(request, response, stream) {
   Readable.fromWeb(upstreamResponse.body).pipe(response);
 }
 
+async function proxyFirstWorkingStream(request, response, rankedStreams) {
+  const errors = [];
+
+  for (const stream of rankedStreams) {
+    try {
+      console.log(`[Emby] Trying ${stream.name}`);
+      await proxySelectedStream(request, response, stream);
+      return true;
+    } catch (error) {
+      const message = error.name === "AbortError"
+        ? `Timed out opening provider after ${UPSTREAM_OPEN_TIMEOUT_MS}ms`
+        : (error.message || String(error));
+      errors.push(`${stream.name}: ${message}`);
+      console.log(`[Emby] Skipped ${stream.name}: ${message}`);
+      if (response.headersSent) {
+        return true;
+      }
+    }
+  }
+
+  response.writeHead(502, {
+    "Access-Control-Allow-Origin": "*",
+    "Content-Type": "text/plain; charset=utf-8"
+  });
+  response.end(`No provider stream opened in time.\n${errors.slice(0, 8).join("\n")}`);
+  return false;
+}
+
 async function handleEmbyPlayback(request, response, streamRequest) {
   const profile = String(streamRequest.searchParams.get("profile") || "1080p").toLowerCase();
   const slot = Number.parseInt(streamRequest.searchParams.get("slot") || "1", 10) || 1;
   const mode = String(streamRequest.searchParams.get("mode") || "proxy").toLowerCase();
 
-  const minStreams = Math.max(1, slot);
+  const minStreams = Math.max(8, slot);
   const streams = await getStreamsFast(streamRequest.type, streamRequest.id, { minStreams });
-  const selected = pickStream(streams, profile, slot);
+  const rankedStreams = rankStreams(streams, profile).slice(Math.max(0, slot - 1));
+  const selected = rankedStreams[0];
 
   if (!selected) {
     response.writeHead(404, {
@@ -200,14 +236,14 @@ async function handleEmbyPlayback(request, response, streamRequest) {
     return;
   }
 
-  await proxySelectedStream(request, response, selected);
+  await proxyFirstWorkingStream(request, response, rankedStreams);
 }
 
 async function handleEmbyDebug(response, streamRequest) {
   const slot = Number.parseInt(streamRequest.searchParams.get("slot") || "1", 10) || 1;
   const startedAt = Date.now();
   const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
-    minStreams: Math.max(1, slot)
+    minStreams: Math.max(8, slot)
   });
   const body = JSON.stringify({
     type: streamRequest.type,
