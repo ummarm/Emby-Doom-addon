@@ -1,7 +1,6 @@
 "use strict";
 
-const { Readable } = require("stream");
-const { pipeline } = require("stream/promises");
+const { once } = require("events");
 const { getStreamsFast } = require("./addon");
 
 const REJECT_WORDS = [
@@ -52,6 +51,7 @@ const PASS_THROUGH_HEADERS = [
 ];
 
 const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 18000);
+const FIRST_CHUNK_TIMEOUT_MS = Number(process.env.FIRST_CHUNK_TIMEOUT_MS || 12000);
 const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 12000);
 const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 35000);
 const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 18000);
@@ -551,6 +551,46 @@ function writeProxyHeaders(response, upstreamResponse, stream) {
   response.writeHead(upstreamResponse.status, headers);
 }
 
+async function readChunkWithTimeout(reader, timeoutMs, label) {
+  let timeout;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      reader.read(),
+      timeoutPromise
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function mediaSampleText(buffer) {
+  return Buffer.from(buffer || Buffer.alloc(0))
+    .slice(0, 512)
+    .toString("utf8")
+    .trim()
+    .toLowerCase();
+}
+
+async function writeResponseChunk(response, buffer) {
+  if (!buffer || buffer.length === 0 || response.destroyed || response.writableEnded) {
+    return false;
+  }
+
+  if (response.write(buffer)) {
+    return true;
+  }
+
+  await Promise.race([
+    once(response, "drain"),
+    once(response, "close")
+  ]).catch(() => {});
+  return !response.destroyed && !response.writableEnded;
+}
+
 async function proxySelectedStream(request, response, stream) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_OPEN_TIMEOUT_MS);
@@ -580,18 +620,69 @@ async function proxySelectedStream(request, response, stream) {
     throw new Error(`Provider returned HTTP ${upstreamResponse.status}`);
   }
 
-  writeProxyHeaders(response, upstreamResponse, stream);
-
   if (request.method === "HEAD" || !upstreamResponse.body) {
+    writeProxyHeaders(response, upstreamResponse, stream);
     response.end();
     return;
   }
 
+  const reader = upstreamResponse.body.getReader();
+  let bytesSent = 0;
+  let headersCommitted = false;
+
   try {
-    await pipeline(Readable.fromWeb(upstreamResponse.body), response);
+    const firstRead = await readChunkWithTimeout(reader, FIRST_CHUNK_TIMEOUT_MS, "first media chunk");
+    if (firstRead.done || !firstRead.value || firstRead.value.length === 0) {
+      throw new Error("Provider closed before sending media bytes");
+    }
+
+    const firstBuffer = Buffer.from(firstRead.value);
+    const contentType = upstreamResponse.headers.get("content-type") || "";
+    const text = mediaSampleText(firstBuffer);
+    if (looksLikeBadProbeBody(text, contentType)) {
+      throw new Error(`Provider sent non-media body ${contentType || "unknown"}`);
+    }
+    if (!looksLikeMediaSample(firstBuffer, contentType)) {
+      throw new Error(`Provider first bytes are not playable media ${contentType || "unknown"}`);
+    }
+
+    writeProxyHeaders(response, upstreamResponse, stream);
+    headersCommitted = true;
+
+    const wroteFirstChunk = await writeResponseChunk(response, firstBuffer);
+    if (!wroteFirstChunk) {
+      throw new Error("Client closed before first media bytes were delivered");
+    }
+    bytesSent += firstBuffer.length;
+    console.log(`[Emby] Opened ${stream.name}; firstChunk=${firstBuffer.length} bytes`);
+
+    while (true) {
+      const read = await reader.read();
+      if (read.done) {
+        break;
+      }
+      const chunk = Buffer.from(read.value);
+      const wroteChunk = await writeResponseChunk(response, chunk);
+      if (!wroteChunk) {
+        break;
+      }
+      bytesSent += chunk.length;
+    }
+
+    if (!response.writableEnded && !response.destroyed) {
+      response.end();
+    }
   } catch (error) {
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+    await reader.cancel().catch(() => {});
+
     if (clientClosed || error.name === "AbortError" || error.code === "ABORT_ERR" || error.code === "ERR_STREAM_PREMATURE_CLOSE") {
-      console.log(`[Emby] Client closed stream for ${stream.name}`);
+      if (!headersCommitted && bytesSent === 0) {
+        throw new Error("Client closed before provider delivered media bytes");
+      }
+      console.log(`[Emby] Client closed stream for ${stream.name}; bytesSent=${bytesSent}`);
       return;
     }
     throw error;
