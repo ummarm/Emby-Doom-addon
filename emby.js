@@ -87,21 +87,38 @@ function streamText(stream) {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
+function has4kQuality(text) {
+  return /\b(?:2160p?|uhd|ultra\s*hd)\b/i.test(text)
+    || /(?:^|[^a-z0-9])4k(?:[^a-z0-9]|$)/i.test(text);
+}
+
+function has1080Quality(text) {
+  return /\b1080p?\b/i.test(text);
+}
+
+function has720Quality(text) {
+  return /\b720p?\b/i.test(text);
+}
+
+function has480Quality(text) {
+  return /\b480p?\b/i.test(text);
+}
+
 function qualityScore(text, profile) {
   let score = 0;
 
-  if (text.includes("2160") || text.includes("4k") || text.includes("uhd")) score += 400;
-  if (text.includes("1080")) score += 300;
-  if (text.includes("720")) score += 180;
-  if (text.includes("480")) score += 90;
+  if (has4kQuality(text)) score += 400;
+  if (has1080Quality(text)) score += 300;
+  if (has720Quality(text)) score += 180;
+  if (has480Quality(text)) score += 90;
 
   if (profile === "4k") {
-    if (text.includes("2160") || text.includes("4k") || text.includes("uhd")) score += 1000;
-    else if (text.includes("1080")) score += 200;
+    if (has4kQuality(text)) score += 1000;
+    else if (has1080Quality(text)) score += 200;
   } else {
-    if (text.includes("1080")) score += 1000;
-    else if (text.includes("720")) score += 250;
-    else if (text.includes("480")) score += 120;
+    if (has1080Quality(text)) score += 1000;
+    else if (has720Quality(text)) score += 250;
+    else if (has480Quality(text)) score += 120;
   }
 
   if (text.includes("web-dl") || text.includes("webdl")) score += 80;
@@ -195,7 +212,7 @@ function embyScore(stream, profile) {
   if (text.includes("truehd")) score -= 160;
   if (text.includes("atmos")) score -= 80;
   if (text.includes("dv ") || text.includes("dolby vision") || text.includes("hdr10")) score -= 80;
-  if (profile === "1080p" && (text.includes("2160") || text.includes("4k") || text.includes("uhd"))) {
+  if (profile === "1080p" && has4kQuality(text)) {
     score -= 2000;
   }
 
@@ -217,7 +234,7 @@ function embyScore(stream, profile) {
 
 function matchesProfile(stream, profile) {
   const text = streamText(stream);
-  const is4k = text.includes("2160") || text.includes("4k") || text.includes("uhd");
+  const is4k = has4kQuality(text);
   if (profile === "4k") {
     return is4k;
   }
@@ -225,7 +242,7 @@ function matchesProfile(stream, profile) {
     if (is4k) {
       return false;
     }
-    return text.includes("1080") || text.includes("720");
+    return has1080Quality(text) || has720Quality(text) || has480Quality(text);
   }
   return true;
 }
@@ -233,9 +250,9 @@ function matchesProfile(stream, profile) {
 function profileFallbacks(profile) {
   if (profile === "1080p") {
     return [
-      (stream) => /\b1080p?\b|1080/i.test(streamText(stream)),
-      (stream) => /\b720p?\b|720/i.test(streamText(stream)),
-      (stream) => /\b480p?\b|480/i.test(streamText(stream))
+      (stream) => has1080Quality(streamText(stream)),
+      (stream) => has720Quality(streamText(stream)),
+      (stream) => has480Quality(streamText(stream))
     ];
   }
   return [
