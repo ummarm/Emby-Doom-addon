@@ -51,15 +51,28 @@ const PASS_THROUGH_HEADERS = [
   "last-modified"
 ];
 
-const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 7000);
-const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 6000);
-const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 22000);
-const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 12000);
-const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
-const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 20);
+const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 18000);
+const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 12000);
+const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 35000);
+const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 18000);
+const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 24);
+const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 36);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
 const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 30 * 60 * 1000);
-const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || "moviebox,streamflix,hindmoviez")
+const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
+  "moviebox",
+  "streamflix",
+  "hindmoviez",
+  "hdhub4u",
+  "hdhub4u_yoruix",
+  "hdhub4u_murph",
+  "moviesdrive",
+  "4khdhub",
+  "4khdhub_yoruix",
+  "4khdhub_murph",
+  "4khdhubtv",
+  "movieblast"
+].join(","))
   .split(",")
   .map((provider) => provider.trim())
   .filter(Boolean);
@@ -545,10 +558,6 @@ async function proxyFirstWorkingStream(request, response, rankedStreams) {
 
   for (const stream of rankedStreams) {
     try {
-      const probe = await probeSeekableStream(stream);
-      if (!probe.ok) {
-        throw new Error(probe.reason);
-      }
       console.log(`[Emby] Trying ${stream.name}`);
       await proxySelectedStream(request, response, stream);
       return stream;
