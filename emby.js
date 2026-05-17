@@ -264,16 +264,20 @@ function probeHeadersForStream(stream) {
 
 async function readProbeSample(response) {
   if (!response.body || typeof response.body.getReader !== "function") {
-    return "";
+    return { buffer: Buffer.alloc(0), text: "" };
   }
 
   const reader = response.body.getReader();
   try {
     const chunk = await reader.read();
     if (!chunk.value) {
-      return "";
+      return { buffer: Buffer.alloc(0), text: "" };
     }
-    return Buffer.from(chunk.value).slice(0, 256).toString("utf8").trim().toLowerCase();
+    const buffer = Buffer.from(chunk.value).slice(0, 512);
+    return {
+      buffer,
+      text: buffer.toString("utf8").trim().toLowerCase()
+    };
   } finally {
     await reader.cancel().catch(() => {});
   }
@@ -294,6 +298,31 @@ function looksLikeBadProbeBody(text, contentType) {
     || sample.includes("cloudflare");
 }
 
+function looksLikeMediaSample(buffer, contentType) {
+  if (!buffer || buffer.length < 4) {
+    return false;
+  }
+
+  const normalizedType = String(contentType || "").toLowerCase();
+  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) {
+    return true;
+  }
+  if (buffer.includes(Buffer.from("ftyp"), 4) || buffer.includes(Buffer.from("moov"), 4) || buffer.includes(Buffer.from("mdat"), 4)) {
+    return true;
+  }
+  if (buffer[0] === 0x47 && (buffer.length < 189 || buffer[188] === 0x47)) {
+    return true;
+  }
+  if (buffer.subarray(0, 4).toString("ascii") === "RIFF") {
+    return true;
+  }
+  if ((normalizedType.startsWith("video/") || normalizedType.includes("octet-stream"))
+    && !/^[\s\x00-\x7f]*$/.test(buffer.subarray(0, Math.min(buffer.length, 64)).toString("latin1"))) {
+    return true;
+  }
+  return false;
+}
+
 async function probeSeekableStream(stream) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SEEK_PROBE_TIMEOUT_MS);
@@ -312,7 +341,7 @@ async function probeSeekableStream(stream) {
 
     const contentType = response.headers.get("content-type") || "";
     const sample = await readProbeSample(response);
-    if (looksLikeBadProbeBody(sample, contentType)) {
+    if (looksLikeBadProbeBody(sample.text, contentType)) {
       return { ok: false, reason: `bad body ${contentType || "unknown"}` };
     }
 
@@ -324,6 +353,10 @@ async function probeSeekableStream(stream) {
 
     if (!seekable) {
       return { ok: false, reason: "no byte range support" };
+    }
+
+    if (!looksLikeMediaSample(sample.buffer, contentType)) {
+      return { ok: false, reason: `no media bytes ${contentType || "unknown"}` };
     }
 
     return { ok: true };
@@ -458,6 +491,10 @@ async function proxyFirstWorkingStream(request, response, rankedStreams) {
 
   for (const stream of rankedStreams) {
     try {
+      const probe = await probeSeekableStream(stream);
+      if (!probe.ok) {
+        throw new Error(probe.reason);
+      }
       console.log(`[Emby] Trying ${stream.name}`);
       await proxySelectedStream(request, response, stream);
       return true;
