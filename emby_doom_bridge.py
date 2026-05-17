@@ -46,7 +46,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit, urlunsplit
 
 import requests
 from flask import Flask, Response, redirect, request
@@ -78,6 +78,8 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "PUT_YOUR_TMDB_API_KEY_HERE")
 # Your Emby-Doom-addon base URL. This should point at the Node addon created in
 # this repo, not your original Doom-addon deployment.
 ADDON_PUBLIC_URL = os.environ.get("ADDON_PUBLIC_URL", "https://emby-doom-addon.zxflix.com")
+ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.0.31")
+STRM_URL_VERSION = os.environ.get("STRM_URL_VERSION", f"emby-doom-{ADDON_VERSION}")
 
 # Legacy only: your original Doom addon base URL. The new .strm files do not use
 # this directly.
@@ -308,16 +310,24 @@ def clean_strm_files(folder: Path):
 
 def movie_strm_urls(imdb_id: str):
     return {
-        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(profile)}.mkv?profile={profile}&slot={slot}"
+        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(profile)}.mkv?{strm_query(profile, slot)}"
         for label, profile, slot in STRM_VARIANTS
     }
 
 
 def episode_strm_urls(imdb_id: str, season: int, episode: int):
     return {
-        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?profile={profile}&slot={slot}"
+        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?{strm_query(profile, slot)}"
         for label, profile, slot in STRM_VARIANTS
     }
+
+
+def strm_query(profile: str, slot: int) -> str:
+    return urlencode({
+        "profile": profile,
+        "slot": str(slot),
+        "v": STRM_URL_VERSION,
+    })
 
 
 def media_style_strm_url(value: str) -> str:
@@ -330,20 +340,24 @@ def media_style_strm_url(value: str) -> str:
     except Exception:
         return url
 
-    query = parse_qs(parts.query)
+    query = parse_qs(parts.query, keep_blank_values=True)
     profile = (query.get("profile") or ["1080p"])[0].lower()
     if profile not in {"1080p", "4k"}:
         profile = "1080p"
+    query["profile"] = [profile]
+    query.setdefault("slot", ["1"])
+    query["v"] = [STRM_URL_VERSION]
+    new_query = urlencode(query, doseq=True)
 
-    movie_match = re.match(r"^/emby/movie/(tt\d+)$", parts.path, re.I)
+    movie_match = re.match(r"^/emby/movie/(tt\d+)(?:/[^/]+\.(?:mkv|mp4|webm))?$", parts.path, re.I)
     if movie_match:
         new_path = f"/emby/movie/{movie_match.group(1)}/{quote(profile)}.mkv"
-        return urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
+        return urlunsplit((parts.scheme, parts.netloc, new_path, new_query, parts.fragment))
 
-    series_match = re.match(r"^/emby/series/(tt\d+)/(\d+)/(\d+)$", parts.path, re.I)
+    series_match = re.match(r"^/emby/series/(tt\d+)/(\d+)/(\d+)(?:/[^/]+\.(?:mkv|mp4|webm))?$", parts.path, re.I)
     if series_match:
         new_path = f"/emby/series/{series_match.group(1)}/{series_match.group(2)}/{series_match.group(3)}/{quote(profile)}.mkv"
-        return urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
+        return urlunsplit((parts.scheme, parts.netloc, new_path, new_query, parts.fragment))
 
     return url
 
@@ -615,9 +629,9 @@ def resolve_and_redirect(kind: str, imdb_id: str, season=None, episode=None):
 
     try:
         if kind == "movie":
-            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(profile)}.mkv?profile={quote(profile)}&slot={slot}"
+            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(profile)}.mkv?{strm_query(profile, slot)}"
         else:
-            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?profile={quote(profile)}&slot={slot}"
+            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?{strm_query(profile, slot)}"
 
         log(f"LEGACY PLAY {kind} {imdb_id} profile={profile} slot={slot} -> {final_url}")
         return redirect(final_url, code=302)
