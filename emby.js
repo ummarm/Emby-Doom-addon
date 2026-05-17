@@ -870,7 +870,7 @@ function parseEmbyPath(pathname, searchParams) {
     };
   }
 
-  match = pathname.match(/^\/emby\/movie\/(tt\d+)$/i);
+  match = pathname.match(/^\/emby\/movie\/(tt\d+)(?:\/[^/]+\.(?:mkv|mp4|webm))?$/i);
   if (match) {
     return {
       type: "movie",
@@ -879,7 +879,7 @@ function parseEmbyPath(pathname, searchParams) {
     };
   }
 
-  match = pathname.match(/^\/emby\/series\/(tt\d+)\/(\d+)\/(\d+)$/i);
+  match = pathname.match(/^\/emby\/series\/(tt\d+)\/(\d+)\/(\d+)(?:\/[^/]+\.(?:mkv|mp4|webm))?$/i);
   if (match) {
     return {
       type: "series",

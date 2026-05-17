@@ -22,8 +22,8 @@ a plain redirect. Some provider URLs also need byte-range handling for seeking.
 This fork adds:
 
 ```text
-/emby/movie/<imdb-id>?profile=1080p&slot=1
-/emby/series/<imdb-id>/<season>/<episode>?profile=1080p&slot=1
+/emby/movie/<imdb-id>/1080p.mkv?profile=1080p&slot=1
+/emby/series/<imdb-id>/<season>/<episode>/1080p.mkv?profile=1080p&slot=1
 ```
 
 Those URLs are clean for `.strm` files. When Emby opens one, the addon selects
@@ -54,13 +54,13 @@ PORT=8788 npm start
 Movie:
 
 ```text
-http://localhost:7000/emby/movie/tt0111161?profile=1080p&slot=1
+http://localhost:7000/emby/movie/tt0111161/1080p.mkv?profile=1080p&slot=1
 ```
 
 Series episode:
 
 ```text
-http://localhost:7000/emby/series/tt0944947/1/1?profile=1080p&slot=1
+http://localhost:7000/emby/series/tt0944947/1/1/1080p.mkv?profile=1080p&slot=1
 ```
 
 Profiles:

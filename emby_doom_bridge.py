@@ -13,11 +13,9 @@ What it does:
    - 200 latest Indian/Bollywood/regional shows
 
 2. Creates Emby-friendly .strm placeholder files.
-   Each movie/episode gets 4 .strm files:
-   - 4K
-   - 1080p A
-   - 1080p B
-   - 1080p C
+   Each movie/episode gets 2 .strm files:
+   - 1080p Best
+   - 4K Best
 
 3. Writes clean Emby playback URLs for Emby-Doom-addon.
    Emby opens the .strm URL -> Emby-Doom-addon chooses best stream -> proxies playback with provider headers/ranges.
@@ -309,17 +307,15 @@ def clean_strm_files(folder: Path):
 
 
 def movie_strm_urls(imdb_id: str):
-    base = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}"
     return {
-        label: f"{base}?profile={profile}&slot={slot}"
+        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(profile)}.mkv?profile={profile}&slot={slot}"
         for label, profile, slot in STRM_VARIANTS
     }
 
 
 def episode_strm_urls(imdb_id: str, season: int, episode: int):
-    base = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}"
     return {
-        label: f"{base}?profile={profile}&slot={slot}"
+        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?profile={profile}&slot={slot}"
         for label, profile, slot in STRM_VARIANTS
     }
 
@@ -565,9 +561,9 @@ def resolve_and_redirect(kind: str, imdb_id: str, season=None, episode=None):
 
     try:
         if kind == "movie":
-            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}?profile={quote(profile)}&slot={slot}"
+            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(profile)}.mkv?profile={quote(profile)}&slot={slot}"
         else:
-            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}?profile={quote(profile)}&slot={slot}"
+            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?profile={quote(profile)}&slot={slot}"
 
         log(f"LEGACY PLAY {kind} {imdb_id} profile={profile} slot={slot} -> {final_url}")
         return redirect(final_url, code=302)
