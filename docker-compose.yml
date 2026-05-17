@@ -1,0 +1,10 @@
+services:
+  emby-doom-addon:
+    build: .
+    container_name: emby-doom-addon
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 7000
+    ports:
+      - "7001:7000"

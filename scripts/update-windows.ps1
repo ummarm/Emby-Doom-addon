@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 
-$repoPath = "C:\server\Doom-addon"
+$repoPath = "C:\server\Emby-Doom-addon"
 
 Set-Location $repoPath
 git pull --ff-only
 docker compose up -d
-docker compose restart doom-addon
+docker compose restart emby-doom-addon
