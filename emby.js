@@ -159,6 +159,11 @@ function embyScore(stream, profile) {
   const size = streamSizeBytes(stream);
   const gb = size / (1024 ** 3);
 
+  if (text.includes("hindi")) score += 700;
+  if (text.includes("dual")) score += 180;
+  if (text.includes("multi")) score += 120;
+  if (!text.includes("hindi")) score -= 500;
+
   if (hasProxyHeaders(stream)) score += 140;
   if (text.includes("web-dl") || text.includes("webdl")) score += 160;
   if (text.includes("mp4") || /\.mp4(?:[?#].*)?$/i.test(stream.url)) score += 180;
@@ -193,6 +198,17 @@ function embyScore(stream, profile) {
   return score;
 }
 
+function matchesProfile(stream, profile) {
+  const text = streamText(stream);
+  if (profile === "4k") {
+    return text.includes("2160") || text.includes("4k") || text.includes("uhd");
+  }
+  if (profile === "1080p") {
+    return text.includes("1080") || text.includes("720");
+  }
+  return true;
+}
+
 function pickStream(streams, profile, slot) {
   const candidates = rankStreams(streams, profile);
 
@@ -206,7 +222,10 @@ function pickStream(streams, profile, slot) {
 
 function rankStreams(streams, profile) {
   return streams
-    .filter((stream) => stream && stream.url && !REJECT_WORDS.some((word) => streamText(stream).includes(word)))
+    .filter((stream) => stream
+      && stream.url
+      && matchesProfile(stream, profile)
+      && !REJECT_WORDS.some((word) => streamText(stream).includes(word)))
     .map((stream) => ({ stream, score: embyScore(stream, profile) }))
     .sort((a, b) => b.score - a.score)
     .map((candidate) => candidate.stream);
@@ -521,7 +540,7 @@ async function proxyFirstWorkingStream(request, response, rankedStreams) {
       }
       console.log(`[Emby] Trying ${stream.name}`);
       await proxySelectedStream(request, response, stream);
-      return true;
+      return stream;
     } catch (error) {
       const message = error.name === "AbortError"
         ? `Timed out opening provider after ${UPSTREAM_OPEN_TIMEOUT_MS}ms`
@@ -529,7 +548,7 @@ async function proxyFirstWorkingStream(request, response, rankedStreams) {
       errors.push(`${stream.name}: ${message}`);
       console.log(`[Emby] Skipped ${stream.name}: ${message}`);
       if (response.headersSent) {
-        return true;
+        return stream;
       }
     }
   }
@@ -539,7 +558,7 @@ async function proxyFirstWorkingStream(request, response, rankedStreams) {
     "Content-Type": "text/plain; charset=utf-8"
   });
   response.end(`No provider stream opened in time.\n${errors.slice(0, 8).join("\n")}`);
-  return false;
+  return null;
 }
 
 async function handleEmbyPlayback(request, response, streamRequest) {
@@ -591,10 +610,10 @@ async function handleEmbyPlayback(request, response, streamRequest) {
     return;
   }
 
-  setCachedStream(cacheKey, selected);
   console.log(`[Emby] ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${selected.name}`);
 
   if (mode === "redirect") {
+    setCachedStream(cacheKey, selected);
     response.writeHead(302, {
       Location: selected.url,
       "Access-Control-Allow-Origin": "*"
@@ -603,7 +622,10 @@ async function handleEmbyPlayback(request, response, streamRequest) {
     return;
   }
 
-  await proxyFirstWorkingStream(request, response, validation.validated.slice(selectedIndex));
+  const openedStream = await proxyFirstWorkingStream(request, response, validation.validated.slice(selectedIndex));
+  if (openedStream) {
+    setCachedStream(cacheKey, openedStream);
+  }
 }
 
 async function handleEmbyDebug(response, streamRequest) {

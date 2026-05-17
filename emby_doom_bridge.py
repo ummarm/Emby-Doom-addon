@@ -110,6 +110,13 @@ MAX_EPISODES_PER_SEASON = 8
 # If true, existing .strm files are overwritten with fresh bridge URLs.
 OVERWRITE_STRM = True
 
+# Keep this small for Emby. The old bridge wrote 4 choices per item; this writes
+# only best Hindi 1080p and best Hindi 4K.
+STRM_VARIANTS = [
+    ("1080p Best", "1080p", 1),
+    ("4K Best", "4k", 1),
+]
+
 # Provider priority. Put your best Doom providers first if you know names.
 PROVIDER_PRIORITY = [
     "torrentio",
@@ -286,20 +293,16 @@ def write_file(path: Path, content: str):
 def movie_strm_urls(imdb_id: str):
     base = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}"
     return {
-        "4K": f"{base}?profile=4k&slot=1",
-        "1080p A": f"{base}?profile=1080p&slot=1",
-        "1080p B": f"{base}?profile=1080p&slot=2",
-        "1080p C": f"{base}?profile=1080p&slot=3",
+        label: f"{base}?profile={profile}&slot={slot}"
+        for label, profile, slot in STRM_VARIANTS
     }
 
 
 def episode_strm_urls(imdb_id: str, season: int, episode: int):
     base = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}"
     return {
-        "4K": f"{base}?profile=4k&slot=1",
-        "1080p A": f"{base}?profile=1080p&slot=1",
-        "1080p B": f"{base}?profile=1080p&slot=2",
-        "1080p C": f"{base}?profile=1080p&slot=3",
+        label: f"{base}?profile={profile}&slot={slot}"
+        for label, profile, slot in STRM_VARIANTS
     }
 
 
