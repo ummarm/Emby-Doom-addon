@@ -1,0 +1,31 @@
+{
+  "id": "community.embydoom",
+  "version": "1.0.28",
+  "name": "Emby-Doom-addon",
+  "description": "An Emby-friendly Doom-addon fork with clean proxy playback URLs.",
+  "resources": [
+    {
+      "name": "stream",
+      "types": [
+        "movie",
+        "series"
+      ],
+      "idPrefixes": [
+        "tt"
+      ]
+    }
+  ],
+  "types": [
+    "movie",
+    "series"
+  ],
+  "idPrefixes": [
+    "tt"
+  ],
+  "catalogs": [],
+  "logo": "https://doom-addon.zxflix.com/assets/umbrella-icon.png",
+  "behaviorHints": {
+    "configurable": false,
+    "p2p": false
+  }
+}

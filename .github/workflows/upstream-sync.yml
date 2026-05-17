@@ -1,0 +1,49 @@
+name: Original upstream provider sync
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run now even if today is outside the 2-day cadence"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync tracked original upstream providers
+        id: sync
+        env:
+          FORCE_SYNC: ${{ github.event.inputs.force || 'false' }}
+        run: python scripts/sync_upstream.py
+
+      - name: Commit synced providers
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A manifest.json package.json providers.json providers
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync Doom-addon providers from original upstreams"
+            git push
+          fi
