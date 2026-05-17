@@ -1,6 +1,6 @@
 {
   "id": "community.embydoom",
-  "version": "1.0.28",
+  "version": "1.0.30",
   "name": "Emby-Doom-addon",
   "description": "An Emby-friendly Doom-addon fork with clean proxy playback URLs.",
   "resources": [

@@ -6,6 +6,6 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 7000
-      EMBY_PROVIDER_IDS: moviebox,streamflix,hindmoviez,hdhub4u,hdhub4u_yoruix,hdhub4u_murph,moviesdrive,4khdhub,4khdhub_yoruix,4khdhub_murph,4khdhubtv,movieblast
+      EMBY_PROVIDER_IDS: flix_streams_emby,flix_streams_vegamovies,moviebox,streamflix,hindmoviez,hdhub4u,hdhub4u_yoruix,hdhub4u_murph,moviesdrive,4khdhub,4khdhub_yoruix,4khdhub_murph,4khdhubtv,movieblast
     ports:
       - "7001:7000"

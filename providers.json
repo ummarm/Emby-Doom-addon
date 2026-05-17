@@ -1,6 +1,6 @@
 {
   "name": "Doom-addon",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "scrapers": [
     {
       "id": "4khdhub",
@@ -133,6 +133,52 @@
       ]
     },
     {
+      "id": "flix_streams_emby",
+      "name": "Flix-Streams Emby",
+      "description": "Emby media library results wrapped from the configured Flix-Streams add-on",
+      "version": "1.0.0",
+      "author": "ummarm",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/flix_streams_emby.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv",
+        "m3u8"
+      ],
+      "logo": "https://flixnest.app/flix-streams/static/icon.png",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "flix_streams_vegamovies",
+      "name": "Flix-Streams VegaMovies",
+      "description": "VegaMovies results wrapped from the configured Flix-Streams add-on",
+      "version": "1.0.0",
+      "author": "ummarm",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/flix_streams_vegamovies.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv",
+        "m3u8"
+      ],
+      "logo": "https://flixnest.app/flix-streams/static/icon.png",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
       "id": "hindmoviez",
       "name": "HindMoviez",
       "description": "HindMoviez - Hindi and English Movies and Series",
@@ -207,7 +253,7 @@
       "id": "moviebox",
       "name": "MovieBox",
       "description": "MovieBox - Worker-backed direct streams for movies and TV",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "author": "ummarm",
       "supportedTypes": [
         "movie",

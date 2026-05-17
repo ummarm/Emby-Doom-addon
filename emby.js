@@ -1,6 +1,5 @@
 "use strict";
 
-const { once } = require("events");
 const { getStreamsFast } = require("./addon");
 
 const REJECT_WORDS = [
@@ -21,6 +20,8 @@ const PROVIDER_PRIORITY = [
   "HDHU DR",
   "HDHU M",
   "HDHU Y",
+  "EMB",
+  "VG",
   "HM",
   "MBL",
   "MB",
@@ -52,14 +53,17 @@ const PASS_THROUGH_HEADERS = [
 
 const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 12000);
 const FIRST_CHUNK_TIMEOUT_MS = Number(process.env.FIRST_CHUNK_TIMEOUT_MS || 8000);
+const FIRST_MEDIA_BUFFER_BYTES = Number(process.env.FIRST_MEDIA_BUFFER_BYTES || 65536);
 const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 6000);
 const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 12000);
 const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 10000);
 const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 6);
 const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 10);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 4);
-const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 0);
+const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 900000);
 const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
+  "flix_streams_emby",
+  "flix_streams_vegamovies",
   "moviebox",
   "streamflix",
   "hindmoviez",
@@ -205,6 +209,8 @@ function embyScore(stream, profile) {
   if (host.includes("wasabisys.com")) score += 100;
   if (host.includes("diskcdn.buzz")) score += 80;
   if (host.includes("moviebox")) score += 80;
+  if (text.includes("emb |") || text.includes("flix-streams emby") || text.includes("media library")) score += 260;
+  if (text.includes("vg |") || text.includes("vegamovies")) score += 220;
   if (host.includes("workers.dev")) score -= 60;
   if (host.includes("odyssey.surf")) score -= 140;
 
@@ -584,11 +590,68 @@ async function writeResponseChunk(response, buffer) {
     return true;
   }
 
-  await Promise.race([
-    once(response, "drain"),
-    once(response, "close")
-  ]).catch(() => {});
+  await new Promise((resolve) => {
+    const cleanup = () => {
+      response.off("drain", onDrain);
+      response.off("close", onClose);
+      response.off("error", onClose);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      resolve();
+    };
+    response.once("drain", onDrain);
+    response.once("close", onClose);
+    response.once("error", onClose);
+  });
   return !response.destroyed && !response.writableEnded;
+}
+
+async function readInitialMediaBuffer(reader, contentType) {
+  const chunks = [];
+  let totalBytes = 0;
+
+  while (totalBytes < FIRST_MEDIA_BUFFER_BYTES) {
+    const read = await readChunkWithTimeout(reader, FIRST_CHUNK_TIMEOUT_MS, "first media chunk");
+    if (read.done || !read.value || read.value.length === 0) {
+      break;
+    }
+
+    const chunk = Buffer.from(read.value);
+    chunks.push(chunk);
+    totalBytes += chunk.length;
+
+    const sample = Buffer.concat(chunks, Math.min(totalBytes, 4096));
+    const text = mediaSampleText(sample);
+    if (looksLikeBadProbeBody(text, contentType)) {
+      throw new Error(`Provider sent non-media body ${contentType || "unknown"}`);
+    }
+    if (looksLikeMediaSample(sample, contentType) && totalBytes >= FIRST_MEDIA_BUFFER_BYTES) {
+      break;
+    }
+  }
+
+  if (totalBytes === 0) {
+    throw new Error("Provider closed before sending media bytes");
+  }
+
+  const buffer = Buffer.concat(chunks, totalBytes);
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  if (looksLikeBadProbeBody(mediaSampleText(sample), contentType)) {
+    throw new Error(`Provider sent non-media body ${contentType || "unknown"}`);
+  }
+  if (!looksLikeMediaSample(sample, contentType)) {
+    throw new Error(`Provider first bytes are not playable media ${contentType || "unknown"}`);
+  }
+  if (buffer.length < FIRST_MEDIA_BUFFER_BYTES) {
+    throw new Error(`Provider only sent ${buffer.length} initial bytes before stalling`);
+  }
+
+  return buffer;
 }
 
 async function proxySelectedStream(request, response, stream) {
@@ -631,20 +694,8 @@ async function proxySelectedStream(request, response, stream) {
   let headersCommitted = false;
 
   try {
-    const firstRead = await readChunkWithTimeout(reader, FIRST_CHUNK_TIMEOUT_MS, "first media chunk");
-    if (firstRead.done || !firstRead.value || firstRead.value.length === 0) {
-      throw new Error("Provider closed before sending media bytes");
-    }
-
-    const firstBuffer = Buffer.from(firstRead.value);
     const contentType = upstreamResponse.headers.get("content-type") || "";
-    const text = mediaSampleText(firstBuffer);
-    if (looksLikeBadProbeBody(text, contentType)) {
-      throw new Error(`Provider sent non-media body ${contentType || "unknown"}`);
-    }
-    if (!looksLikeMediaSample(firstBuffer, contentType)) {
-      throw new Error(`Provider first bytes are not playable media ${contentType || "unknown"}`);
-    }
+    const firstBuffer = await readInitialMediaBuffer(reader, contentType);
 
     writeProxyHeaders(response, upstreamResponse, stream);
     headersCommitted = true;
@@ -654,7 +705,7 @@ async function proxySelectedStream(request, response, stream) {
       throw new Error("Client closed before first media bytes were delivered");
     }
     bytesSent += firstBuffer.length;
-    console.log(`[Emby] Opened ${stream.name}; firstChunk=${firstBuffer.length} bytes`);
+    console.log(`[Emby] Opened ${stream.name}; firstBuffer=${firstBuffer.length} bytes`);
 
     while (true) {
       const read = await reader.read();

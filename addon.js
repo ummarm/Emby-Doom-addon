@@ -202,11 +202,13 @@ function responseProbeResult(response, url, sample = {}) {
 
   const acceptRanges = response.headers.get("accept-ranges") || "";
   const contentRange = response.headers.get("content-range") || "";
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  const mediaBytesOk = looksLikeMediaBytes(url, contentType, sampleBuffer);
   return {
-    ok: (response.status === 206
+    ok: mediaBytesOk && (response.status === 200 && contentLength > 0
+      || response.status === 206
       || /bytes/i.test(acceptRanges)
       || /^bytes\s+/i.test(contentRange))
-      && looksLikeMediaBytes(url, contentType, sampleBuffer)
   };
 }
 
@@ -311,6 +313,8 @@ const UMBRELLA_PROVIDER_CODES = {
   "hdhub4u": "HDHU DR",
   "hdhub4u_murph": "HDHU M",
   "hdhub4u_yoruix": "HDHU Y",
+  "flix_streams_emby": "EMB",
+  "flix_streams_vegamovies": "VG",
   "hindmoviez": "HM",
   "movieblast": "MBL",
   "moviebox": "MB",
@@ -432,6 +436,10 @@ function normalizeLanguageText(value) {
     .replace(/\bMovieBox\b/ig, "")
     .replace(/\bMoviesDrive\b/ig, "")
     .replace(/\bStreamflix\b/ig, "")
+    .replace(/\bFlix-Streams\b/ig, "")
+    .replace(/\bMedia\s+Library\b/ig, "")
+    .replace(/\bEmby\b/ig, "")
+    .replace(/\bVegaMovies\b/ig, "")
     .replace(/\b4K\b/ig, "")
     .replace(/\b(?:2160p|1080p|720p|480p|360p|auto)\b/ig, "")
     .replace(/\b(?:fsl|pixelserver|hubcloud|hubdrive|download|file|server)\b/ig, "")
