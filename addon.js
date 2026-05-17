@@ -6,6 +6,8 @@ const path = require("path");
 const ROOT = __dirname;
 const TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 const DEFAULT_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 45000);
+const FAST_PROVIDER_TIMEOUT_MS = Number(process.env.FAST_PROVIDER_TIMEOUT_MS || 12000);
+const FAST_OVERALL_TIMEOUT_MS = Number(process.env.FAST_OVERALL_TIMEOUT_MS || 15000);
 const STREAM_PROBE_TIMEOUT_MS = Number(process.env.STREAM_PROBE_TIMEOUT_MS || 8000);
 const STREAM_PROBE_CONCURRENCY = Number(process.env.STREAM_PROBE_CONCURRENCY || 6);
 
@@ -563,48 +565,8 @@ async function withTimeout(promise, ms, label) {
   }
 }
 
-async function getStreams(type, id) {
-  const parsed = parseStremioId(type, id);
-  if (!parsed) {
-    return [];
-  }
-
-  let tmdbId;
-  try {
-    tmdbId = await resolveTmdbId(parsed.imdbId, parsed.mediaType);
-    if (!tmdbId) {
-      return [];
-    }
-  } catch (error) {
-    console.error(`[TMDB] ${error.message || error}`);
-    return [];
-  }
-
-  const providerResults = await Promise.allSettled(
-    providerEntries.map(async (provider) => {
-      const providerGetStreams = loadProvider(provider);
-      const rawStreams = await withTimeout(
-        Promise.resolve(providerGetStreams(tmdbId, parsed.mediaType, parsed.season, parsed.episode)),
-        DEFAULT_TIMEOUT_MS,
-        provider.name
-      );
-
-      return (Array.isArray(rawStreams) ? rawStreams : [])
-        .map((stream) => normalizeStream(stream, provider))
-        .filter(Boolean);
-    })
-  );
-
-  const streams = providerResults.flatMap((result, index) => {
-    if (result.status === "fulfilled") {
-      return result.value;
-    }
-    console.error(`[${providerEntries[index].name}] ${result.reason.message || result.reason}`);
-    return [];
-  });
-
-  const playableStreams = await filterPlayableStreams(dedupeStreams(streams));
-  return playableStreams.sort((a, b) => {
+function sortStreams(streams) {
+  return streams.sort((a, b) => {
     const sizeA = streamSizeBytes(a);
     const sizeB = streamSizeBytes(b);
     if (sizeA && sizeB && sizeA !== sizeB) {
@@ -619,9 +581,121 @@ async function getStreams(type, id) {
   });
 }
 
+async function rawProviderStreams(parsed, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const providerResults = await Promise.allSettled(
+    providerEntries.map(async (provider) => {
+      const providerGetStreams = loadProvider(provider);
+      const rawStreams = await withTimeout(
+        Promise.resolve(providerGetStreams(parsed.tmdbId, parsed.mediaType, parsed.season, parsed.episode)),
+        timeoutMs,
+        provider.name
+      );
+
+      return (Array.isArray(rawStreams) ? rawStreams : [])
+        .map((stream) => normalizeStream(stream, provider))
+        .filter(Boolean);
+    })
+  );
+
+  return providerResults.flatMap((result, index) => {
+    if (result.status === "fulfilled") {
+      return result.value;
+    }
+    console.error(`[${providerEntries[index].name}] ${result.reason.message || result.reason}`);
+    return [];
+  });
+}
+
+async function prepareRequest(type, id) {
+  const parsed = parseStremioId(type, id);
+  if (!parsed) {
+    return null;
+  }
+
+  try {
+    parsed.tmdbId = await resolveTmdbId(parsed.imdbId, parsed.mediaType);
+    if (!parsed.tmdbId) {
+      return null;
+    }
+  } catch (error) {
+    console.error(`[TMDB] ${error.message || error}`);
+    return null;
+  }
+
+  return parsed;
+}
+
+async function getStreams(type, id) {
+  const parsed = await prepareRequest(type, id);
+  if (!parsed) {
+    return [];
+  }
+
+  const streams = await rawProviderStreams(parsed, DEFAULT_TIMEOUT_MS);
+  const playableStreams = await filterPlayableStreams(dedupeStreams(streams));
+  return sortStreams(playableStreams);
+}
+
+async function getStreamsFast(type, id, options = {}) {
+  const parsed = await prepareRequest(type, id);
+  if (!parsed) {
+    return [];
+  }
+
+  const minStreams = Math.max(1, Number(options.minStreams || 1));
+  const providerTimeoutMs = Number(options.providerTimeoutMs || FAST_PROVIDER_TIMEOUT_MS);
+  const overallTimeoutMs = Number(options.overallTimeoutMs || FAST_OVERALL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const collected = [];
+
+  const pending = providerEntries.map((provider, index) => {
+    const providerGetStreams = loadProvider(provider);
+    return withTimeout(
+      Promise.resolve(providerGetStreams(parsed.tmdbId, parsed.mediaType, parsed.season, parsed.episode)),
+      providerTimeoutMs,
+      provider.name
+    )
+      .then((rawStreams) => ({
+        index,
+        streams: (Array.isArray(rawStreams) ? rawStreams : [])
+          .map((stream) => normalizeStream(stream, provider))
+          .filter(Boolean)
+      }))
+      .catch((error) => {
+        console.error(`[${provider.name}] ${error.message || error}`);
+        return { index, streams: [] };
+      });
+  });
+
+  const unsettled = new Set(pending.keys());
+  while (unsettled.size > 0 && Date.now() - startedAt < overallTimeoutMs) {
+    const race = Promise.race(
+      [...unsettled].map((index) => pending[index].then((result) => ({ pendingIndex: index, result })))
+    );
+    const remainingMs = Math.max(1, overallTimeoutMs - (Date.now() - startedAt));
+    const winner = await Promise.race([
+      race,
+      new Promise((resolve) => setTimeout(() => resolve(null), remainingMs))
+    ]);
+
+    if (!winner) {
+      break;
+    }
+
+    unsettled.delete(winner.pendingIndex);
+    collected.push(...winner.result.streams);
+    if (collected.length >= minStreams) {
+      break;
+    }
+  }
+
+  return sortStreams(dedupeStreams(collected));
+}
+
 module.exports = {
   manifest,
   getStreams,
+  getStreamsFast,
   parseStremioId,
   resolveTmdbId,
   normalizeStream

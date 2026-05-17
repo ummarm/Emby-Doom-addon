@@ -4,7 +4,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { manifest, getStreams } = require("./addon");
-const { handleEmbyPlayback, parseEmbyPath } = require("./emby");
+const { handleEmbyDebug, handleEmbyPlayback, parseEmbyPath } = require("./emby");
 
 const PORT = Number(process.env.PORT || 7000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -94,7 +94,11 @@ const server = http.createServer(async (request, response) => {
 
     const embyRequest = parseEmbyPath(url.pathname, url.searchParams);
     if (embyRequest) {
-      await handleEmbyPlayback(request, response, embyRequest);
+      if (embyRequest.debug) {
+        await handleEmbyDebug(response, embyRequest);
+      } else {
+        await handleEmbyPlayback(request, response, embyRequest);
+      }
       return;
     }
 

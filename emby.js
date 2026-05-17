@@ -1,7 +1,7 @@
 "use strict";
 
 const { Readable } = require("stream");
-const { getStreams } = require("./addon");
+const { getStreams, getStreamsFast } = require("./addon");
 
 const REJECT_WORDS = [
   "cam", "hdcam", "ts", "telesync", "tc", "telecine",
@@ -151,6 +151,16 @@ async function proxySelectedStream(request, response, stream) {
     signal: controller.signal
   });
 
+  if (!upstreamResponse.ok) {
+    const text = await upstreamResponse.text().catch(() => "");
+    response.writeHead(502, {
+      "Access-Control-Allow-Origin": "*",
+      "Content-Type": "text/plain; charset=utf-8"
+    });
+    response.end(`Provider returned HTTP ${upstreamResponse.status}\n${text.slice(0, 500)}`);
+    return;
+  }
+
   writeProxyHeaders(response, upstreamResponse);
 
   if (request.method === "HEAD" || !upstreamResponse.body) {
@@ -166,7 +176,8 @@ async function handleEmbyPlayback(request, response, streamRequest) {
   const slot = Number.parseInt(streamRequest.searchParams.get("slot") || "1", 10) || 1;
   const mode = String(streamRequest.searchParams.get("mode") || "proxy").toLowerCase();
 
-  const streams = await getStreams(streamRequest.type, streamRequest.id);
+  const minStreams = Math.max(1, slot);
+  const streams = await getStreamsFast(streamRequest.type, streamRequest.id, { minStreams });
   const selected = pickStream(streams, profile, slot);
 
   if (!selected) {
@@ -192,8 +203,61 @@ async function handleEmbyPlayback(request, response, streamRequest) {
   await proxySelectedStream(request, response, selected);
 }
 
+async function handleEmbyDebug(response, streamRequest) {
+  const slot = Number.parseInt(streamRequest.searchParams.get("slot") || "1", 10) || 1;
+  const startedAt = Date.now();
+  const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
+    minStreams: Math.max(1, slot)
+  });
+  const body = JSON.stringify({
+    type: streamRequest.type,
+    id: streamRequest.id,
+    elapsedMs: Date.now() - startedAt,
+    count: streams.length,
+    streams: streams.slice(0, 10).map((stream) => ({
+      name: stream.name,
+      title: stream.title,
+      urlHost: (() => {
+        try {
+          return new URL(stream.url).host;
+        } catch {
+          return null;
+        }
+      })(),
+      hasProxyHeaders: Boolean(stream.behaviorHints && stream.behaviorHints.proxyHeaders)
+    }))
+  }, null, 2);
+
+  response.writeHead(200, {
+    "Access-Control-Allow-Origin": "*",
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body)
+  });
+  response.end(body);
+}
+
 function parseEmbyPath(pathname, searchParams) {
-  let match = pathname.match(/^\/emby\/movie\/(tt\d+)$/i);
+  let match = pathname.match(/^\/emby\/debug\/movie\/(tt\d+)$/i);
+  if (match) {
+    return {
+      debug: true,
+      type: "movie",
+      id: match[1],
+      searchParams
+    };
+  }
+
+  match = pathname.match(/^\/emby\/debug\/series\/(tt\d+)\/(\d+)\/(\d+)$/i);
+  if (match) {
+    return {
+      debug: true,
+      type: "series",
+      id: `${match[1]}:${match[2]}:${match[3]}`,
+      searchParams
+    };
+  }
+
+  match = pathname.match(/^\/emby\/movie\/(tt\d+)$/i);
   if (match) {
     return {
       type: "movie",
@@ -215,6 +279,7 @@ function parseEmbyPath(pathname, searchParams) {
 }
 
 module.exports = {
+  handleEmbyDebug,
   handleEmbyPlayback,
   parseEmbyPath,
   pickStream
