@@ -53,33 +53,51 @@ from urllib.parse import quote
 import requests
 from flask import Flask, Response, redirect, request
 
+
+def load_dotenv(path: Path = Path(".env")) -> None:
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_dotenv()
+
 # =========================
 # CONFIG - EDIT THESE
 # =========================
 
-TMDB_API_KEY = "PUT_YOUR_TMDB_API_KEY_HERE"
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "PUT_YOUR_TMDB_API_KEY_HERE")
 
 # Your Emby-Doom-addon base URL. This should point at the Node addon created in
 # this repo, not your original Doom-addon deployment.
-ADDON_PUBLIC_URL = "http://192.168.0.10:7000"
+ADDON_PUBLIC_URL = os.environ.get("ADDON_PUBLIC_URL", "https://emby-doom-addon.zxflix.com")
 
 # Legacy only: your original Doom addon base URL. The new .strm files do not use
 # this directly.
-DOOM_ADDON_BASE = "https://doom-addon.zxflix.com"
+DOOM_ADDON_BASE = os.environ.get("DOOM_ADDON_BASE", "https://doom-addon.zxflix.com")
 
 # Legacy only: old bridge URL. New .strm files use ADDON_PUBLIC_URL instead.
 # This is the URL that Emby clients opened from old .strm files.
 # If Emby and clients are on same PC only, localhost is fine.
 # For TV/phone on same LAN, use your PC IP: http://192.168.0.10:8787
 # For remote users, use your domain: https://bridge.yourdomain.com
-BRIDGE_PUBLIC_URL = "http://192.168.0.10:8787"
+BRIDGE_PUBLIC_URL = os.environ.get("BRIDGE_PUBLIC_URL", "http://192.168.0.10:8787")
 
 # Emby server details, used only to trigger library scan after sync.
-EMBY_URL = "http://localhost:8096"
-EMBY_API_KEY = "PUT_YOUR_EMBY_API_KEY_HERE"
+EMBY_URL = os.environ.get("EMBY_URL", "http://localhost:8096")
+EMBY_API_KEY = os.environ.get("EMBY_API_KEY", "PUT_YOUR_EMBY_API_KEY_HERE")
 
-MOVIES_DIR = Path(r"D:\movies")
-SHOWS_DIR = Path(r"D:\shows")
+MOVIES_DIR = Path(os.environ.get("MOVIES_DIR", r"D:\movies"))
+SHOWS_DIR = Path(os.environ.get("SHOWS_DIR", r"D:\shows"))
 
 # Catalog sizes
 TARGET_PER_LIST = 200
