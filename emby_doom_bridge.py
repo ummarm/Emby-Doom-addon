@@ -110,6 +110,10 @@ MAX_EPISODES_PER_SEASON = 8
 # If true, existing .strm files are overwritten with fresh bridge URLs.
 OVERWRITE_STRM = True
 
+# If true, old .strm choices such as 1080p A/B/C are removed before writing the
+# current compact Emby choices.
+CLEAN_OLD_STRM = True
+
 # Keep this small for Emby. The old bridge wrote 4 choices per item; this writes
 # only best Hindi 1080p and best Hindi 4K.
 STRM_VARIANTS = [
@@ -290,6 +294,20 @@ def write_file(path: Path, content: str):
     return True
 
 
+def clean_strm_files(folder: Path):
+    if not CLEAN_OLD_STRM or not folder.exists():
+        return 0
+
+    removed = 0
+    for path in folder.glob("*.strm"):
+        try:
+            path.unlink()
+            removed += 1
+        except Exception as e:
+            log(f"Could not remove old .strm file {path}: {e}")
+    return removed
+
+
 def movie_strm_urls(imdb_id: str):
     base = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}"
     return {
@@ -318,6 +336,10 @@ def create_movie_item(item):
     year = release[:4] if release else ""
     folder_name = safe_name(f"{title} ({year})" if year else title)
     movie_dir = MOVIES_DIR / folder_name
+
+    removed = clean_strm_files(movie_dir)
+    if removed:
+        log(f"Removed {removed} old movie .strm files from {movie_dir}")
 
     count = 0
     for label, url in movie_strm_urls(imdb_id).items():
@@ -366,6 +388,10 @@ def create_show_item(item):
             en = ep.get("episode_number")
             if not en:
                 continue
+            if en == episodes[0].get("episode_number"):
+                removed = clean_strm_files(season_dir)
+                if removed:
+                    log(f"Removed {removed} old episode .strm files from {season_dir}")
             ep_title = safe_name(ep.get("name") or f"Episode {en}")
             prefix = safe_name(f"{folder_name} - S{sn:02d}E{en:02d} - {ep_title}")
             for label, url in episode_strm_urls(imdb_id, sn, en).items():
