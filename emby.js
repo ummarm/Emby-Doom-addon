@@ -55,10 +55,10 @@ const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 
 const FIRST_CHUNK_TIMEOUT_MS = Number(process.env.FIRST_CHUNK_TIMEOUT_MS || 8000);
 const FIRST_MEDIA_BUFFER_BYTES = Number(process.env.FIRST_MEDIA_BUFFER_BYTES || 65536);
 const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 6000);
-const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 12000);
-const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 10000);
-const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 6);
-const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 10);
+const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 32000);
+const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 30000);
+const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
+const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 18);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 4);
 const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 900000);
 const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
@@ -76,6 +76,13 @@ const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
   "4khdhub_murph",
   "4khdhubtv",
   "movieblast"
+].join(","))
+  .split(",")
+  .map((provider) => provider.trim())
+  .filter(Boolean);
+const EMBY_WAIT_PROVIDER_IDS = String(process.env.EMBY_WAIT_PROVIDER_IDS || [
+  "flix_streams_emby",
+  "flix_streams_vegamovies"
 ].join(","))
   .split(",")
   .map((provider) => provider.trim())
@@ -193,11 +200,13 @@ function embyScore(stream, profile) {
   const host = hostnameOf(stream);
   const size = streamSizeBytes(stream);
   const gb = size / (1024 ** 3);
+  const isFlixEmby = text.includes("emb |") || text.includes("flix-streams emby") || text.includes("media library") || text.includes("media lib");
+  const isVegaMovies = text.includes("vg |") || text.includes("vegamovies");
 
   if (text.includes("hindi")) score += 700;
   if (text.includes("dual")) score += 180;
   if (text.includes("multi")) score += 120;
-  if (!text.includes("hindi")) score -= 500;
+  if (!text.includes("hindi") && !isFlixEmby) score -= 500;
 
   if (hasProxyHeaders(stream)) score += 140;
   if (text.includes("web-dl") || text.includes("webdl")) score += 160;
@@ -209,8 +218,8 @@ function embyScore(stream, profile) {
   if (host.includes("wasabisys.com")) score += 100;
   if (host.includes("diskcdn.buzz")) score += 80;
   if (host.includes("moviebox")) score += 80;
-  if (text.includes("emb |") || text.includes("flix-streams emby") || text.includes("media library")) score += 260;
-  if (text.includes("vg |") || text.includes("vegamovies")) score += 220;
+  if (isFlixEmby) score += 900;
+  if (isVegaMovies) score += 500;
   if (host.includes("workers.dev")) score -= 60;
   if (host.includes("odyssey.surf")) score -= 140;
 
@@ -254,6 +263,21 @@ function matchesProfile(stream, profile) {
 }
 
 function profileFallbacks(profile) {
+  if (profile === "4k") {
+    return [
+      (stream) => {
+        const text = streamText(stream);
+        const gb = streamSizeBytes(stream) / (1024 ** 3);
+        return has4kQuality(text)
+          && (!gb || gb <= 45)
+          && !text.includes("remux")
+          && !text.includes("truehd")
+          && !text.includes("dolby vision");
+      },
+      (stream) => has1080Quality(streamText(stream)),
+      (stream) => has720Quality(streamText(stream))
+    ];
+  }
   if (profile === "1080p") {
     return [
       (stream) => has1080Quality(streamText(stream)),
@@ -277,11 +301,11 @@ function pickStream(streams, profile, slot) {
   return candidates[index];
 }
 
-function rankStreams(streams, profile) {
+function rankStreams(streams, profile, enforceProfile = true) {
   return streams
     .filter((stream) => stream
       && stream.url
-      && matchesProfile(stream, profile)
+      && (!enforceProfile || matchesProfile(stream, profile))
       && !REJECT_WORDS.some((word) => streamText(stream).includes(word)))
     .map((stream) => ({ stream, score: embyScore(stream, profile) }))
     .sort((a, b) => b.score - a.score)
@@ -802,12 +826,13 @@ async function handleEmbyPlayback(request, response, streamRequest) {
     minStreams: Math.max(EMBY_MIN_CANDIDATES, slot),
     overallTimeoutMs: EMBY_RESOLVE_TIMEOUT_MS,
     providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS,
-    providerIds: EMBY_PROVIDER_IDS
+    providerIds: EMBY_PROVIDER_IDS,
+    waitProviderIds: EMBY_WAIT_PROVIDER_IDS
   });
   let validation = { validated: [], errors: [] };
   let rankedStreams = [];
   for (const fallback of profileFallbacks(profile)) {
-    rankedStreams = rankStreams(streams.filter(fallback), profile);
+    rankedStreams = rankStreams(streams.filter(fallback), profile, false);
     if (rankedStreams.length === 0) {
       continue;
     }
@@ -862,7 +887,8 @@ async function handleEmbyDebug(response, streamRequest) {
     minStreams: Math.max(EMBY_MIN_CANDIDATES, slot),
     overallTimeoutMs: EMBY_RESOLVE_TIMEOUT_MS,
     providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS,
-    providerIds: EMBY_PROVIDER_IDS
+    providerIds: EMBY_PROVIDER_IDS,
+    waitProviderIds: EMBY_WAIT_PROVIDER_IDS
   });
   const rankedStreams = rankStreams(streams, profile);
   const probeResults = shouldProbe
@@ -880,6 +906,7 @@ async function handleEmbyDebug(response, streamRequest) {
     count: streams.length,
     cacheKeys: streamCache.size,
     providerIds: EMBY_PROVIDER_IDS,
+    waitProviderIds: EMBY_WAIT_PROVIDER_IDS,
     probed: Boolean(shouldProbe),
     probeResults,
     streams: rankedStreams.slice(0, 20).map((stream) => ({

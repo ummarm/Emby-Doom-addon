@@ -669,11 +669,22 @@ async function getStreamsFast(type, id, options = {}) {
   const providerTimeoutMs = Number(options.providerTimeoutMs || FAST_PROVIDER_TIMEOUT_MS);
   const overallTimeoutMs = Number(options.overallTimeoutMs || FAST_OVERALL_TIMEOUT_MS);
   const entries = selectedProviderEntries(options.providerIds);
+  const waitProviderIds = new Set((options.waitProviderIds || []).map((id) => String(id).toLowerCase()));
+  let waitProvidersRemaining = entries.filter((provider) => waitProviderIds.has(provider.id.toLowerCase())).length;
   const collected = [];
   let resolveEarly;
   const earlyEnough = new Promise((resolve) => {
     resolveEarly = resolve;
   });
+
+  function markProviderDone(provider) {
+    if (waitProviderIds.has(provider.id.toLowerCase())) {
+      waitProvidersRemaining = Math.max(0, waitProvidersRemaining - 1);
+    }
+    if (collected.length >= minStreams && waitProvidersRemaining === 0) {
+      resolveEarly("min-streams");
+    }
+  }
 
   const pending = entries.map((provider, index) => {
     const providerGetStreams = loadProvider(provider);
@@ -690,13 +701,12 @@ async function getStreamsFast(type, id, options = {}) {
       }))
       .then((result) => {
         collected.push(...result.streams);
-        if (collected.length >= minStreams) {
-          resolveEarly("min-streams");
-        }
+        markProviderDone(provider);
         return result;
       })
       .catch((error) => {
         console.error(`[${provider.name}] ${error.message || error}`);
+        markProviderDone(provider);
         return { index, streams: [] };
       });
   });

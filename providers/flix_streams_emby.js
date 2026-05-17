@@ -2,6 +2,7 @@
 
 const PROVIDER_NAME = "Flix-Streams Emby";
 const DEFAULT_MANIFEST_URL = "https://flixnest.app/flix-streams/u/6p9xzp78nunz/manifest.json";
+const FLIX_STREAMS_TIMEOUT_MS = Number(process.env.FLIX_STREAMS_TIMEOUT_MS || 30000);
 
 function configuredBaseUrl() {
   const raw = process.env.FLIX_STREAMS_MANIFEST_URL || process.env.FLIX_STREAMS_BASE_URL || DEFAULT_MANIFEST_URL;
@@ -32,7 +33,8 @@ async function fetchFlixStreams(tmdbId, mediaType, season, episode) {
       "Accept": "application/json",
       "User-Agent": "Doom-addon/1.0"
     },
-    redirect: "follow"
+    redirect: "follow",
+    signal: AbortSignal.timeout(FLIX_STREAMS_TIMEOUT_MS)
   });
   if (!response.ok) {
     throw new Error(`${PROVIDER_NAME} returned HTTP ${response.status}`);
@@ -50,7 +52,7 @@ function isEmbyStream(stream) {
     stream && stream.url
   ].filter(Boolean).join(" ");
 
-  return /\b(?:emby|medialib|media library)\b/i.test(text)
+  return /\b(?:emby|medialib|media\s*lib|media library)\b/i.test(text)
     || /\/api\/emby\/media\b/i.test(text);
 }
 
