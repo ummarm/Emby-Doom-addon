@@ -58,7 +58,7 @@ const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
 const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 20);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
 const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 30 * 60 * 1000);
-const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || "hdhub4u,hdhub4u_yoruix,moviebox,streamflix,hindmoviez,moviesdrive")
+const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || "moviebox,streamflix,hindmoviez")
   .split(",")
   .map((provider) => provider.trim())
   .filter(Boolean);

@@ -6,5 +6,6 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 7000
+      EMBY_PROVIDER_IDS: moviebox,streamflix,hindmoviez
     ports:
       - "7001:7000"
