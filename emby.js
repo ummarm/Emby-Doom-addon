@@ -458,7 +458,13 @@ function writeProxyHeaders(response, upstreamResponse, stream) {
 async function proxySelectedStream(request, response, stream) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_OPEN_TIMEOUT_MS);
-  request.on("close", () => controller.abort());
+  let clientClosed = false;
+  request.on("close", () => {
+    clientClosed = true;
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  });
 
   let upstreamResponse;
   try {
@@ -483,7 +489,25 @@ async function proxySelectedStream(request, response, stream) {
     return;
   }
 
-  Readable.fromWeb(upstreamResponse.body).pipe(response);
+  await new Promise((resolve, reject) => {
+    const upstream = Readable.fromWeb(upstreamResponse.body);
+
+    const finish = () => resolve();
+    const fail = (error) => {
+      if (clientClosed || error.name === "AbortError" || error.code === "ABORT_ERR" || error.code === "ERR_STREAM_PREMATURE_CLOSE") {
+        console.log(`[Emby] Client closed stream for ${stream.name}`);
+        resolve();
+        return;
+      }
+      reject(error);
+    };
+
+    response.on("close", finish);
+    response.on("finish", finish);
+    response.on("error", fail);
+    upstream.on("error", fail);
+    upstream.pipe(response);
+  });
 }
 
 async function proxyFirstWorkingStream(request, response, rankedStreams) {
