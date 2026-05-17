@@ -8,6 +8,7 @@ const TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca0
 const DEFAULT_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 45000);
 const FAST_PROVIDER_TIMEOUT_MS = Number(process.env.FAST_PROVIDER_TIMEOUT_MS || 12000);
 const FAST_OVERALL_TIMEOUT_MS = Number(process.env.FAST_OVERALL_TIMEOUT_MS || 15000);
+const TMDB_TIMEOUT_MS = Number(process.env.TMDB_TIMEOUT_MS || 8000);
 const STREAM_PROBE_TIMEOUT_MS = Number(process.env.STREAM_PROBE_TIMEOUT_MS || 8000);
 const STREAM_PROBE_CONCURRENCY = Number(process.env.STREAM_PROBE_CONCURRENCY || 6);
 
@@ -613,7 +614,11 @@ async function prepareRequest(type, id) {
   }
 
   try {
-    parsed.tmdbId = await resolveTmdbId(parsed.imdbId, parsed.mediaType);
+    parsed.tmdbId = await withTimeout(
+      resolveTmdbId(parsed.imdbId, parsed.mediaType),
+      TMDB_TIMEOUT_MS,
+      "TMDB lookup"
+    );
     if (!parsed.tmdbId) {
       return null;
     }
@@ -645,7 +650,6 @@ async function getStreamsFast(type, id, options = {}) {
   const minStreams = Math.max(1, Number(options.minStreams || 1));
   const providerTimeoutMs = Number(options.providerTimeoutMs || FAST_PROVIDER_TIMEOUT_MS);
   const overallTimeoutMs = Number(options.overallTimeoutMs || FAST_OVERALL_TIMEOUT_MS);
-  const startedAt = Date.now();
   const collected = [];
 
   const pending = providerEntries.map((provider, index) => {
@@ -661,31 +665,26 @@ async function getStreamsFast(type, id, options = {}) {
           .map((stream) => normalizeStream(stream, provider))
           .filter(Boolean)
       }))
+      .then((result) => {
+        collected.push(...result.streams);
+        return result;
+      })
       .catch((error) => {
         console.error(`[${provider.name}] ${error.message || error}`);
         return { index, streams: [] };
       });
   });
 
-  const unsettled = new Set(pending.keys());
-  while (unsettled.size > 0 && Date.now() - startedAt < overallTimeoutMs) {
-    const race = Promise.race(
-      [...unsettled].map((index) => pending[index].then((result) => ({ pendingIndex: index, result })))
-    );
-    const remainingMs = Math.max(1, overallTimeoutMs - (Date.now() - startedAt));
-    const winner = await Promise.race([
-      race,
-      new Promise((resolve) => setTimeout(() => resolve(null), remainingMs))
-    ]);
+  const settled = await Promise.race([
+    Promise.allSettled(pending),
+    new Promise((resolve) => setTimeout(() => resolve(null), overallTimeoutMs))
+  ]);
 
-    if (!winner) {
-      break;
-    }
-
-    unsettled.delete(winner.pendingIndex);
-    collected.push(...winner.result.streams);
-    if (collected.length >= minStreams) {
-      break;
+  if (settled && collected.length < minStreams) {
+    for (const result of settled) {
+      if (result.status === "fulfilled") {
+        collected.push(...result.value.streams);
+      }
     }
   }
 
