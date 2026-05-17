@@ -57,6 +57,7 @@ function parseStreamPath(pathname) {
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    console.log(`[HTTP] ${request.method} ${url.pathname}${url.search}`);
 
     if (request.method === "OPTIONS") {
       response.writeHead(204, {

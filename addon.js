@@ -582,9 +582,19 @@ function sortStreams(streams) {
   });
 }
 
-async function rawProviderStreams(parsed, timeoutMs = DEFAULT_TIMEOUT_MS) {
+function selectedProviderEntries(providerIds = null) {
+  if (!providerIds || providerIds.length === 0) {
+    return providerEntries;
+  }
+
+  const allowed = new Set(providerIds.map((id) => String(id).toLowerCase()));
+  return providerEntries.filter((provider) => allowed.has(provider.id.toLowerCase()));
+}
+
+async function rawProviderStreams(parsed, timeoutMs = DEFAULT_TIMEOUT_MS, providerIds = null) {
+  const entries = selectedProviderEntries(providerIds);
   const providerResults = await Promise.allSettled(
-    providerEntries.map(async (provider) => {
+    entries.map(async (provider) => {
       const providerGetStreams = loadProvider(provider);
       const rawStreams = await withTimeout(
         Promise.resolve(providerGetStreams(parsed.tmdbId, parsed.mediaType, parsed.season, parsed.episode)),
@@ -602,7 +612,7 @@ async function rawProviderStreams(parsed, timeoutMs = DEFAULT_TIMEOUT_MS) {
     if (result.status === "fulfilled") {
       return result.value;
     }
-    console.error(`[${providerEntries[index].name}] ${result.reason.message || result.reason}`);
+    console.error(`[${entries[index].name}] ${result.reason.message || result.reason}`);
     return [];
   });
 }
@@ -650,9 +660,10 @@ async function getStreamsFast(type, id, options = {}) {
   const minStreams = Math.max(1, Number(options.minStreams || 1));
   const providerTimeoutMs = Number(options.providerTimeoutMs || FAST_PROVIDER_TIMEOUT_MS);
   const overallTimeoutMs = Number(options.overallTimeoutMs || FAST_OVERALL_TIMEOUT_MS);
+  const entries = selectedProviderEntries(options.providerIds);
   const collected = [];
 
-  const pending = providerEntries.map((provider, index) => {
+  const pending = entries.map((provider, index) => {
     const providerGetStreams = loadProvider(provider);
     return withTimeout(
       Promise.resolve(providerGetStreams(parsed.tmdbId, parsed.mediaType, parsed.season, parsed.episode)),

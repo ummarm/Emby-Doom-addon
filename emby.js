@@ -58,6 +58,10 @@ const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
 const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 20);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
 const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 30 * 60 * 1000);
+const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || "hdhub4u,hdhub4u_yoruix,moviebox,streamflix,hindmoviez,moviesdrive")
+  .split(",")
+  .map((provider) => provider.trim())
+  .filter(Boolean);
 const streamCache = new Map();
 
 function streamText(stream) {
@@ -509,7 +513,8 @@ async function handleEmbyPlayback(request, response, streamRequest) {
   const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
     minStreams: Math.max(EMBY_MIN_CANDIDATES, slot),
     overallTimeoutMs: EMBY_RESOLVE_TIMEOUT_MS,
-    providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS
+    providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS,
+    providerIds: EMBY_PROVIDER_IDS
   });
   const rankedStreams = rankStreams(streams, profile);
   const validation = await validateRankedStreams(rankedStreams, Math.max(0, slot - 1));
@@ -548,7 +553,8 @@ async function handleEmbyDebug(response, streamRequest) {
   const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
     minStreams: Math.max(EMBY_MIN_CANDIDATES, slot),
     overallTimeoutMs: EMBY_RESOLVE_TIMEOUT_MS,
-    providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS
+    providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS,
+    providerIds: EMBY_PROVIDER_IDS
   });
   const rankedStreams = rankStreams(streams, profile);
   const probeResults = shouldProbe
@@ -565,6 +571,7 @@ async function handleEmbyDebug(response, streamRequest) {
     elapsedMs: Date.now() - startedAt,
     count: streams.length,
     cacheKeys: streamCache.size,
+    providerIds: EMBY_PROVIDER_IDS,
     probed: Boolean(shouldProbe),
     probeResults,
     streams: rankedStreams.slice(0, 20).map((stream) => ({
