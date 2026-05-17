@@ -58,7 +58,7 @@ const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 
 const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 24);
 const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 36);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
-const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 30 * 60 * 1000);
+const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 0);
 const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
   "moviebox",
   "streamflix",
@@ -289,6 +289,10 @@ function cacheKeyForRequest(streamRequest, profile, slot) {
 }
 
 function getCachedStream(cacheKey) {
+  if (STREAM_CACHE_TTL_MS <= 0) {
+    return null;
+  }
+
   const cached = streamCache.get(cacheKey);
   if (!cached) {
     return null;
@@ -301,6 +305,10 @@ function getCachedStream(cacheKey) {
 }
 
 function setCachedStream(cacheKey, stream) {
+  if (STREAM_CACHE_TTL_MS <= 0) {
+    return;
+  }
+
   streamCache.set(cacheKey, {
     stream,
     expiresAt: Date.now() + STREAM_CACHE_TTL_MS
@@ -619,6 +627,7 @@ async function handleEmbyPlayback(request, response, streamRequest) {
       return;
     }
     try {
+      console.log(`[Emby] Trying cached ${cachedStream.name}`);
       await proxySelectedStream(request, response, cachedStream);
       return;
     } catch (error) {
