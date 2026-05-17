@@ -50,12 +50,12 @@ const PASS_THROUGH_HEADERS = [
   "last-modified"
 ];
 
-const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 10000);
-const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 8000);
-const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 45000);
-const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 25000);
-const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 40);
-const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 24);
+const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 7000);
+const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 6000);
+const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 22000);
+const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 12000);
+const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
+const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 20);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
 const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 30 * 60 * 1000);
 const streamCache = new Map();
@@ -337,19 +337,22 @@ async function probeSeekableStream(stream) {
 
 async function validateRankedStreams(rankedStreams, desiredIndex) {
   const probeTargets = rankedStreams.slice(0, Math.max(EMBY_VALIDATE_CANDIDATES, desiredIndex + 1));
-  const results = [];
+  const validated = [];
   const errors = [];
-  let nextIndex = 0;
-  const concurrency = Math.min(EMBY_VALIDATE_CONCURRENCY, probeTargets.length);
 
-  async function worker() {
-    while (nextIndex < probeTargets.length) {
-      const currentIndex = nextIndex;
-      const current = probeTargets[currentIndex];
-      nextIndex += 1;
-      const probe = await probeSeekableStream(current);
+  for (let start = 0; start < probeTargets.length && validated.length <= desiredIndex; start += EMBY_VALIDATE_CONCURRENCY) {
+    const batch = probeTargets.slice(start, start + EMBY_VALIDATE_CONCURRENCY);
+    const results = await Promise.all(batch.map(async (stream, offset) => ({
+      index: start + offset,
+      stream,
+      probe: await probeSeekableStream(stream)
+    })));
+
+    for (const result of results.sort((a, b) => a.index - b.index)) {
+      const current = result.stream;
+      const probe = result.probe;
       if (probe.ok) {
-        results.push({ index: currentIndex, stream: current });
+        validated.push(current);
         console.log(`[Emby] Seekable ${current.name}`);
       } else {
         errors.push(`${current.name}: ${probe.reason}`);
@@ -358,10 +361,6 @@ async function validateRankedStreams(rankedStreams, desiredIndex) {
     }
   }
 
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
-  const validated = results
-    .sort((a, b) => a.index - b.index)
-    .map((result) => result.stream);
   return { validated, errors };
 }
 
