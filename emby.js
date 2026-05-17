@@ -1,7 +1,7 @@
 "use strict";
 
 const { Readable } = require("stream");
-const { getStreams, getStreamsFast } = require("./addon");
+const { getStreamsFast } = require("./addon");
 
 const REJECT_WORDS = [
   "cam", "hdcam", "ts", "telesync", "tc", "telecine",
@@ -101,6 +101,94 @@ function qualityScore(text, profile) {
   return score;
 }
 
+function parseSizeToBytes(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  const match = String(value || "").match(/([\d.]+)\s*(tb|gb|mb|kb|bytes|byte|b)\b/i);
+  if (!match) {
+    return 0;
+  }
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return 0;
+  }
+
+  const unit = match[2].toLowerCase();
+  const multipliers = {
+    tb: 1024 ** 4,
+    gb: 1024 ** 3,
+    mb: 1024 ** 2,
+    kb: 1024,
+    bytes: 1,
+    byte: 1,
+    b: 1
+  };
+  return Math.round(amount * multipliers[unit]);
+}
+
+function streamSizeBytes(stream) {
+  return parseSizeToBytes(stream && stream.behaviorHints && stream.behaviorHints.videoSize)
+    || parseSizeToBytes(stream && stream.title)
+    || parseSizeToBytes(stream && stream.description)
+    || parseSizeToBytes(stream && stream.name);
+}
+
+function hostnameOf(stream) {
+  try {
+    return new URL(stream.url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function hasProxyHeaders(stream) {
+  return Boolean(stream && stream.behaviorHints && stream.behaviorHints.proxyHeaders);
+}
+
+function embyScore(stream, profile) {
+  const text = streamText(stream);
+  let score = qualityScore(text, profile);
+  const host = hostnameOf(stream);
+  const size = streamSizeBytes(stream);
+  const gb = size / (1024 ** 3);
+
+  if (hasProxyHeaders(stream)) score += 140;
+  if (text.includes("web-dl") || text.includes("webdl")) score += 160;
+  if (text.includes("mp4") || /\.mp4(?:[?#].*)?$/i.test(stream.url)) score += 180;
+  if (text.includes("x264") || text.includes("h264")) score += 80;
+  if (text.includes("ddp") || text.includes("aac")) score += 45;
+
+  if (host.includes("r2.dev")) score += 120;
+  if (host.includes("wasabisys.com")) score += 100;
+  if (host.includes("diskcdn.buzz")) score += 80;
+  if (host.includes("moviebox")) score += 80;
+  if (host.includes("workers.dev")) score -= 60;
+  if (host.includes("odyssey.surf")) score -= 140;
+
+  if (text.includes("remux")) score -= 220;
+  if (text.includes("truehd")) score -= 160;
+  if (text.includes("atmos")) score -= 80;
+  if (text.includes("dv ") || text.includes("dolby vision") || text.includes("hdr10")) score -= 80;
+
+  if (size > 0) {
+    if (profile === "4k") {
+      if (gb <= 25) score += 80;
+      if (gb > 45) score -= 240;
+      if (gb > 70) score -= 400;
+    } else {
+      if (gb <= 8) score += 160;
+      if (gb > 12) score -= 180;
+      if (gb > 20) score -= 350;
+      if (gb > 30) score -= 500;
+    }
+  }
+
+  return score;
+}
+
 function pickStream(streams, profile, slot) {
   const candidates = rankStreams(streams, profile);
 
@@ -115,7 +203,7 @@ function pickStream(streams, profile, slot) {
 function rankStreams(streams, profile) {
   return streams
     .filter((stream) => stream && stream.url && !REJECT_WORDS.some((word) => streamText(stream).includes(word)))
-    .map((stream) => ({ stream, score: qualityScore(streamText(stream), profile) }))
+    .map((stream) => ({ stream, score: embyScore(stream, profile) }))
     .sort((a, b) => b.score - a.score)
     .map((candidate) => candidate.stream);
 }
@@ -277,17 +365,55 @@ async function validateRankedStreams(rankedStreams, desiredIndex) {
   return { validated, errors };
 }
 
-function writeProxyHeaders(response, upstreamResponse) {
+function inferContentType(stream, upstreamResponse) {
+  const upstreamType = upstreamResponse.headers.get("content-type");
+  if (upstreamType) {
+    return upstreamType;
+  }
+
+  const text = streamText(stream);
+  const url = String(stream.url || "").toLowerCase();
+  if (text.includes(".mp4") || url.includes(".mp4")) return "video/mp4";
+  if (text.includes(".mkv") || url.includes(".mkv")) return "video/x-matroska";
+  if (text.includes(".webm") || url.includes(".webm")) return "video/webm";
+  if (text.includes(".m3u8") || url.includes(".m3u8")) return "application/vnd.apple.mpegurl";
+  return "application/octet-stream";
+}
+
+function inferFilename(stream) {
+  const filename = stream.behaviorHints && stream.behaviorHints.filename;
+  if (filename) {
+    return filename;
+  }
+
+  const firstLine = String(stream.title || stream.description || "").split("\n")[0].trim();
+  if (/\.(mkv|mp4|webm|m3u8)\b/i.test(firstLine)) {
+    return firstLine.replace(/"/g, "");
+  }
+  return null;
+}
+
+function writeProxyHeaders(response, upstreamResponse, stream) {
   const headers = {
     "Access-Control-Allow-Origin": "*",
-    "X-Emby-Doom-Proxied": "1"
+    "X-Emby-Doom-Proxied": "1",
+    "Accept-Ranges": "bytes",
+    "Content-Type": inferContentType(stream, upstreamResponse)
   };
 
   for (const name of PASS_THROUGH_HEADERS) {
+    if (name === "content-type") {
+      continue;
+    }
     const value = upstreamResponse.headers.get(name);
     if (value && !HOP_BY_HOP_HEADERS.has(name)) {
       headers[name] = value;
     }
+  }
+
+  const filename = inferFilename(stream);
+  if (filename && !headers["content-disposition"]) {
+    headers["Content-Disposition"] = `inline; filename="${filename}"`;
   }
 
   response.writeHead(upstreamResponse.status, headers);
@@ -314,7 +440,7 @@ async function proxySelectedStream(request, response, stream) {
     throw new Error(`Provider returned HTTP ${upstreamResponse.status}`);
   }
 
-  writeProxyHeaders(response, upstreamResponse);
+  writeProxyHeaders(response, upstreamResponse, stream);
 
   if (request.method === "HEAD" || !upstreamResponse.body) {
     response.end();
@@ -418,29 +544,37 @@ async function handleEmbyPlayback(request, response, streamRequest) {
 async function handleEmbyDebug(response, streamRequest) {
   const slot = Number.parseInt(streamRequest.searchParams.get("slot") || "1", 10) || 1;
   const startedAt = Date.now();
+  const profile = String(streamRequest.searchParams.get("profile") || "1080p").toLowerCase();
+  const shouldProbe = ["1", "true", "yes"].includes(String(streamRequest.searchParams.get("probe") || "").toLowerCase());
   const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
     minStreams: Math.max(EMBY_MIN_CANDIDATES, slot),
     overallTimeoutMs: EMBY_RESOLVE_TIMEOUT_MS,
     providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS
   });
-  const rankedStreams = rankStreams(streams, String(streamRequest.searchParams.get("profile") || "1080p").toLowerCase());
+  const rankedStreams = rankStreams(streams, profile);
+  const probeResults = shouldProbe
+    ? await Promise.all(rankedStreams.slice(0, 12).map(async (stream) => ({
+        name: stream.name,
+        urlHost: hostnameOf(stream),
+        probe: await probeSeekableStream(stream)
+      })))
+    : undefined;
   const body = JSON.stringify({
     type: streamRequest.type,
     id: streamRequest.id,
+    profile,
     elapsedMs: Date.now() - startedAt,
     count: streams.length,
     cacheKeys: streamCache.size,
+    probed: Boolean(shouldProbe),
+    probeResults,
     streams: rankedStreams.slice(0, 20).map((stream) => ({
       name: stream.name,
       title: stream.title,
-      urlHost: (() => {
-        try {
-          return new URL(stream.url).host;
-        } catch {
-          return null;
-        }
-      })(),
-      hasProxyHeaders: Boolean(stream.behaviorHints && stream.behaviorHints.proxyHeaders)
+      urlHost: hostnameOf(stream),
+      sizeBytes: streamSizeBytes(stream),
+      embyScore: embyScore(stream, profile),
+      hasProxyHeaders: hasProxyHeaders(stream)
     }))
   }, null, 2);
 
