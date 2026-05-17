@@ -195,6 +195,9 @@ function embyScore(stream, profile) {
   if (text.includes("truehd")) score -= 160;
   if (text.includes("atmos")) score -= 80;
   if (text.includes("dv ") || text.includes("dolby vision") || text.includes("hdr10")) score -= 80;
+  if (profile === "1080p" && (text.includes("2160") || text.includes("4k") || text.includes("uhd"))) {
+    score -= 2000;
+  }
 
   if (size > 0) {
     if (profile === "4k") {
@@ -214,10 +217,14 @@ function embyScore(stream, profile) {
 
 function matchesProfile(stream, profile) {
   const text = streamText(stream);
+  const is4k = text.includes("2160") || text.includes("4k") || text.includes("uhd");
   if (profile === "4k") {
-    return text.includes("2160") || text.includes("4k") || text.includes("uhd");
+    return is4k;
   }
   if (profile === "1080p") {
+    if (is4k) {
+      return false;
+    }
     return text.includes("1080") || text.includes("720");
   }
   return true;
