@@ -46,7 +46,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 
 import requests
 from flask import Flask, Response, redirect, request
@@ -318,6 +318,60 @@ def episode_strm_urls(imdb_id: str, season: int, episode: int):
         label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?profile={profile}&slot={slot}"
         for label, profile, slot in STRM_VARIANTS
     }
+
+
+def media_style_strm_url(value: str) -> str:
+    url = value.strip()
+    if not url:
+        return url
+
+    try:
+        parts = urlsplit(url)
+    except Exception:
+        return url
+
+    query = parse_qs(parts.query)
+    profile = (query.get("profile") or ["1080p"])[0].lower()
+    if profile not in {"1080p", "4k"}:
+        profile = "1080p"
+
+    movie_match = re.match(r"^/emby/movie/(tt\d+)$", parts.path, re.I)
+    if movie_match:
+        new_path = f"/emby/movie/{movie_match.group(1)}/{quote(profile)}.mkv"
+        return urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
+
+    series_match = re.match(r"^/emby/series/(tt\d+)/(\d+)/(\d+)$", parts.path, re.I)
+    if series_match:
+        new_path = f"/emby/series/{series_match.group(1)}/{series_match.group(2)}/{series_match.group(3)}/{quote(profile)}.mkv"
+        return urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
+
+    return url
+
+
+def repair_strm_urls():
+    scanned = 0
+    updated = 0
+    roots = [MOVIES_DIR, SHOWS_DIR]
+
+    for root in roots:
+        if not root.exists():
+            log(f"Skipping missing folder: {root}")
+            continue
+
+        for path in root.rglob("*.strm"):
+            scanned += 1
+            try:
+                old_text = path.read_text(encoding="utf-8").strip()
+                new_text = media_style_strm_url(old_text)
+                if new_text != old_text:
+                    path.write_text(new_text + "\n", encoding="utf-8")
+                    updated += 1
+                    log(f"Repaired {path}")
+            except Exception as e:
+                log(f"Could not repair {path}: {e}")
+
+    log(f"Finished STRM repair. Scanned {scanned}, updated {updated}.")
+    emby_scan()
 
 
 def create_movie_item(item):
@@ -601,6 +655,8 @@ def main():
 
     if cmd == "sync":
         sync_catalog()
+    elif cmd in ("repair", "repair-strm"):
+        repair_strm_urls()
     elif cmd == "server":
         run_server()
     elif cmd == "all":
@@ -610,6 +666,7 @@ def main():
         print("""
 Usage:
   python emby_doom_bridge.py sync
+  python emby_doom_bridge.py repair
   python emby_doom_bridge.py server
   python emby_doom_bridge.py all
 """)
