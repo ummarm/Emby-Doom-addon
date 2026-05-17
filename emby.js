@@ -375,7 +375,9 @@ async function probeSeekableStream(stream) {
       return { ok: false, reason: "no byte range support" };
     }
 
-    if (!looksLikeMediaSample(sample.buffer, contentType)) {
+    const mediaTypeLooksUsable = String(contentType || "").toLowerCase().startsWith("video/")
+      || String(contentType || "").toLowerCase().includes("octet-stream");
+    if (!mediaTypeLooksUsable && !looksLikeMediaSample(sample.buffer, contentType)) {
       return { ok: false, reason: `no media bytes ${contentType || "unknown"}` };
     }
 
@@ -422,7 +424,7 @@ async function validateRankedStreams(rankedStreams, desiredIndex) {
 }
 
 function inferContentType(stream, upstreamResponse) {
-  const upstreamType = upstreamResponse.headers.get("content-type");
+  const upstreamType = upstreamResponse && upstreamResponse.headers.get("content-type");
   if (upstreamType) {
     return upstreamType;
   }
@@ -434,6 +436,22 @@ function inferContentType(stream, upstreamResponse) {
   if (text.includes(".webm") || url.includes(".webm")) return "video/webm";
   if (text.includes(".m3u8") || url.includes(".m3u8")) return "application/vnd.apple.mpegurl";
   return "application/octet-stream";
+}
+
+function syntheticHeadersForStream(stream) {
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "X-Emby-Doom-Proxied": "1",
+    "Accept-Ranges": "bytes",
+    "Content-Type": inferContentType(stream, null)
+  };
+
+  const filename = inferFilename(stream);
+  if (filename) {
+    headers["Content-Disposition"] = `inline; filename="${filename}"`;
+  }
+
+  return headers;
 }
 
 function inferFilename(stream) {
@@ -611,6 +629,13 @@ async function handleEmbyPlayback(request, response, streamRequest) {
       Location: selected.url,
       "Access-Control-Allow-Origin": "*"
     });
+    response.end();
+    return;
+  }
+
+  if (request.method === "HEAD") {
+    setCachedStream(cacheKey, selected);
+    response.writeHead(200, syntheticHeadersForStream(selected));
     response.end();
     return;
   }
