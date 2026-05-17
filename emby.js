@@ -1,6 +1,7 @@
 "use strict";
 
 const { Readable } = require("stream");
+const { pipeline } = require("stream/promises");
 const { getStreamsFast } = require("./addon");
 
 const REJECT_WORDS = [
@@ -478,9 +479,11 @@ async function proxySelectedStream(request, response, stream) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_OPEN_TIMEOUT_MS);
   let clientClosed = false;
-  request.on("close", () => {
-    clientClosed = true;
-    if (!controller.signal.aborted) {
+  response.on("close", () => {
+    if (!response.writableEnded) {
+      clientClosed = true;
+    }
+    if (clientClosed && !controller.signal.aborted) {
       controller.abort();
     }
   });
@@ -508,25 +511,15 @@ async function proxySelectedStream(request, response, stream) {
     return;
   }
 
-  await new Promise((resolve, reject) => {
-    const upstream = Readable.fromWeb(upstreamResponse.body);
-
-    const finish = () => resolve();
-    const fail = (error) => {
-      if (clientClosed || error.name === "AbortError" || error.code === "ABORT_ERR" || error.code === "ERR_STREAM_PREMATURE_CLOSE") {
-        console.log(`[Emby] Client closed stream for ${stream.name}`);
-        resolve();
-        return;
-      }
-      reject(error);
-    };
-
-    response.on("close", finish);
-    response.on("finish", finish);
-    response.on("error", fail);
-    upstream.on("error", fail);
-    upstream.pipe(response);
-  });
+  try {
+    await pipeline(Readable.fromWeb(upstreamResponse.body), response);
+  } catch (error) {
+    if (clientClosed || error.name === "AbortError" || error.code === "ABORT_ERR" || error.code === "ERR_STREAM_PREMATURE_CLOSE") {
+      console.log(`[Emby] Client closed stream for ${stream.name}`);
+      return;
+    }
+    throw error;
+  }
 }
 
 async function proxyFirstWorkingStream(request, response, rankedStreams) {
