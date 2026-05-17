@@ -51,6 +51,14 @@ const PASS_THROUGH_HEADERS = [
 ];
 
 const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 10000);
+const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 8000);
+const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 45000);
+const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 25000);
+const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 40);
+const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 24);
+const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
+const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 30 * 60 * 1000);
+const streamCache = new Map();
 
 function streamText(stream) {
   return [
@@ -129,6 +137,144 @@ function requestHeadersForStream(stream, incomingRequest) {
   }
 
   return headers;
+}
+
+function cacheKeyForRequest(streamRequest, profile, slot) {
+  return `${streamRequest.type}:${streamRequest.id}:${profile}:${slot}`;
+}
+
+function getCachedStream(cacheKey) {
+  const cached = streamCache.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+  if (Date.now() > cached.expiresAt) {
+    streamCache.delete(cacheKey);
+    return null;
+  }
+  return cached.stream;
+}
+
+function setCachedStream(cacheKey, stream) {
+  streamCache.set(cacheKey, {
+    stream,
+    expiresAt: Date.now() + STREAM_CACHE_TTL_MS
+  });
+}
+
+function probeHeadersForStream(stream) {
+  const headers = requestHeadersForStream(stream, { headers: {} });
+  if (!headers.Range && !headers.range) {
+    headers.Range = "bytes=0-4095";
+  }
+  return headers;
+}
+
+async function readProbeSample(response) {
+  if (!response.body || typeof response.body.getReader !== "function") {
+    return "";
+  }
+
+  const reader = response.body.getReader();
+  try {
+    const chunk = await reader.read();
+    if (!chunk.value) {
+      return "";
+    }
+    return Buffer.from(chunk.value).slice(0, 256).toString("utf8").trim().toLowerCase();
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
+function looksLikeBadProbeBody(text, contentType) {
+  const normalizedType = String(contentType || "").toLowerCase();
+  const sample = String(text || "").toLowerCase();
+  return normalizedType.includes("text/html")
+    || normalizedType.includes("application/json")
+    || normalizedType.includes("text/plain")
+    || sample.startsWith("<!doctype")
+    || sample.startsWith("<html")
+    || sample.startsWith("{")
+    || sample.includes("access denied")
+    || sample.includes("not found")
+    || sample.includes("link expired")
+    || sample.includes("cloudflare");
+}
+
+async function probeSeekableStream(stream) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SEEK_PROBE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(stream.url, {
+      method: "GET",
+      headers: probeHeadersForStream(stream),
+      redirect: "follow",
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      return { ok: false, reason: `HTTP ${response.status}` };
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    const sample = await readProbeSample(response);
+    if (looksLikeBadProbeBody(sample, contentType)) {
+      return { ok: false, reason: `bad body ${contentType || "unknown"}` };
+    }
+
+    const contentRange = response.headers.get("content-range") || "";
+    const acceptRanges = response.headers.get("accept-ranges") || "";
+    const seekable = response.status === 206
+      || /^bytes\s+/i.test(contentRange)
+      || /bytes/i.test(acceptRanges);
+
+    if (!seekable) {
+      return { ok: false, reason: "no byte range support" };
+    }
+
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error.name === "AbortError"
+        ? `probe timed out after ${SEEK_PROBE_TIMEOUT_MS}ms`
+        : (error.message || String(error))
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function validateRankedStreams(rankedStreams, desiredIndex) {
+  const probeTargets = rankedStreams.slice(0, Math.max(EMBY_VALIDATE_CANDIDATES, desiredIndex + 1));
+  const results = [];
+  const errors = [];
+  let nextIndex = 0;
+  const concurrency = Math.min(EMBY_VALIDATE_CONCURRENCY, probeTargets.length);
+
+  async function worker() {
+    while (nextIndex < probeTargets.length) {
+      const currentIndex = nextIndex;
+      const current = probeTargets[currentIndex];
+      nextIndex += 1;
+      const probe = await probeSeekableStream(current);
+      if (probe.ok) {
+        results.push({ index: currentIndex, stream: current });
+        console.log(`[Emby] Seekable ${current.name}`);
+      } else {
+        errors.push(`${current.name}: ${probe.reason}`);
+        console.log(`[Emby] Not seekable ${current.name}: ${probe.reason}`);
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  const validated = results
+    .sort((a, b) => a.index - b.index)
+    .map((result) => result.stream);
+  return { validated, errors };
 }
 
 function writeProxyHeaders(response, upstreamResponse) {
@@ -210,21 +356,51 @@ async function handleEmbyPlayback(request, response, streamRequest) {
   const profile = String(streamRequest.searchParams.get("profile") || "1080p").toLowerCase();
   const slot = Number.parseInt(streamRequest.searchParams.get("slot") || "1", 10) || 1;
   const mode = String(streamRequest.searchParams.get("mode") || "proxy").toLowerCase();
+  const cacheKey = cacheKeyForRequest(streamRequest, profile, slot);
+  const cachedStream = getCachedStream(cacheKey);
 
-  const minStreams = Math.max(8, slot);
-  const streams = await getStreamsFast(streamRequest.type, streamRequest.id, { minStreams });
-  const rankedStreams = rankStreams(streams, profile).slice(Math.max(0, slot - 1));
-  const selected = rankedStreams[0];
+  if (cachedStream) {
+    console.log(`[Emby] Cache hit ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${cachedStream.name}`);
+    if (mode === "redirect") {
+      response.writeHead(302, {
+        Location: cachedStream.url,
+        "Access-Control-Allow-Origin": "*"
+      });
+      response.end();
+      return;
+    }
+    try {
+      await proxySelectedStream(request, response, cachedStream);
+      return;
+    } catch (error) {
+      streamCache.delete(cacheKey);
+      console.log(`[Emby] Cached stream failed: ${error.message || error}`);
+      if (response.headersSent) {
+        return;
+      }
+    }
+  }
+
+  const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
+    minStreams: Math.max(EMBY_MIN_CANDIDATES, slot),
+    overallTimeoutMs: EMBY_RESOLVE_TIMEOUT_MS,
+    providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS
+  });
+  const rankedStreams = rankStreams(streams, profile);
+  const validation = await validateRankedStreams(rankedStreams, Math.max(0, slot - 1));
+  const selectedIndex = Math.min(Math.max(slot - 1, 0), validation.validated.length - 1);
+  const selected = validation.validated[selectedIndex];
 
   if (!selected) {
     response.writeHead(404, {
       "Access-Control-Allow-Origin": "*",
       "Content-Type": "text/plain; charset=utf-8"
     });
-    response.end(`No playable streams found for ${streamRequest.type} ${streamRequest.id}`);
+    response.end(`No seekable streams found for ${streamRequest.type} ${streamRequest.id}\n${validation.errors.slice(0, 12).join("\n")}`);
     return;
   }
 
+  setCachedStream(cacheKey, selected);
   console.log(`[Emby] ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${selected.name}`);
 
   if (mode === "redirect") {
@@ -236,21 +412,25 @@ async function handleEmbyPlayback(request, response, streamRequest) {
     return;
   }
 
-  await proxyFirstWorkingStream(request, response, rankedStreams);
+  await proxyFirstWorkingStream(request, response, validation.validated.slice(selectedIndex));
 }
 
 async function handleEmbyDebug(response, streamRequest) {
   const slot = Number.parseInt(streamRequest.searchParams.get("slot") || "1", 10) || 1;
   const startedAt = Date.now();
   const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
-    minStreams: Math.max(8, slot)
+    minStreams: Math.max(EMBY_MIN_CANDIDATES, slot),
+    overallTimeoutMs: EMBY_RESOLVE_TIMEOUT_MS,
+    providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS
   });
+  const rankedStreams = rankStreams(streams, String(streamRequest.searchParams.get("profile") || "1080p").toLowerCase());
   const body = JSON.stringify({
     type: streamRequest.type,
     id: streamRequest.id,
     elapsedMs: Date.now() - startedAt,
     count: streams.length,
-    streams: streams.slice(0, 10).map((stream) => ({
+    cacheKeys: streamCache.size,
+    streams: rankedStreams.slice(0, 20).map((stream) => ({
       name: stream.name,
       title: stream.title,
       urlHost: (() => {
