@@ -61,6 +61,7 @@ const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
 const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 18);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 4);
 const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 900000);
+const EMBY_DEFAULT_MODE = String(process.env.EMBY_DEFAULT_MODE || "auto").toLowerCase();
 const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
   "flix_streams_emby",
   "flix_streams_vegamovies",
@@ -118,6 +119,7 @@ const EMBY_WAIT_PROVIDER_IDS = String(process.env.EMBY_WAIT_PROVIDER_IDS || [
   .filter(Boolean);
 const streamCache = new Map();
 const laneResolvePromises = new Map();
+const prewarmPromises = new Map();
 
 const PLAYBACK_LANES = [
   {
@@ -268,7 +270,8 @@ function embyScore(stream, profile) {
   if (text.includes("multi")) score += 120;
   if (!text.includes("hindi") && !isFlixEmby) score -= 500;
 
-  if (hasProxyHeaders(stream)) score += 140;
+  if (hasProxyHeaders(stream)) score -= 90;
+  else score += 220;
   if (text.includes("web-dl") || text.includes("webdl")) score += 160;
   if (text.includes("mp4") || /\.mp4(?:[?#].*)?$/i.test(stream.url)) score += 180;
   if (text.includes("x264") || text.includes("h264")) score += 80;
@@ -631,16 +634,27 @@ function inferFilename(stream) {
   return null;
 }
 
+function noStoreHeaders() {
+  return {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "CDN-Cache-Control": "no-store",
+    "Cloudflare-CDN-Cache-Control": "no-store",
+    "Pragma": "no-cache",
+    "Expires": "0"
+  };
+}
+
 function writeProxyHeaders(response, upstreamResponse, stream) {
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "X-Emby-Doom-Proxied": "1",
     "Accept-Ranges": "bytes",
-    "Content-Type": inferContentType(stream, upstreamResponse)
+    "Content-Type": inferContentType(stream, upstreamResponse),
+    ...noStoreHeaders()
   };
 
   for (const name of PASS_THROUGH_HEADERS) {
-    if (name === "content-type") {
+    if (name === "content-type" || name === "cache-control") {
       continue;
     }
     const value = upstreamResponse.headers.get(name);
@@ -893,8 +907,27 @@ function writeSyntheticHead(response, profile) {
     "Access-Control-Allow-Origin": "*",
     "X-Emby-Doom-Proxied": "1",
     "Accept-Ranges": "bytes",
-    "Cache-Control": "no-store",
-    "Content-Type": profile === "4k" ? "video/x-matroska" : "video/mp4"
+    "Content-Type": profile === "4k" ? "video/x-matroska" : "video/mp4",
+    ...noStoreHeaders()
+  });
+  response.end();
+}
+
+function shouldProxyStream(stream, mode) {
+  if (mode === "proxy") {
+    return true;
+  }
+  if (mode === "redirect") {
+    return false;
+  }
+  return hasProxyHeaders(stream);
+}
+
+function redirectToStream(response, stream) {
+  response.writeHead(302, {
+    Location: stream.url,
+    "Access-Control-Allow-Origin": "*",
+    ...noStoreHeaders()
   });
   response.end();
 }
@@ -959,7 +992,7 @@ async function resolveLaneCached(streamRequest, profile, slot, lane, fallbackFil
   return promise;
 }
 
-async function openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, cacheKey, fallbackFilter = null, fallbackLabel = "") {
+async function openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, cacheKey, mode, fallbackFilter = null, fallbackLabel = "") {
   const result = await resolveLaneCached(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
   if (!result.selected) {
     console.log(`[Emby] Lane ${lane.name}${fallbackLabel ? ` ${fallbackLabel}` : ""} found no playable candidate`);
@@ -967,6 +1000,17 @@ async function openFromPlaybackLane(request, response, streamRequest, profile, s
   }
 
   console.log(`[Emby] ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} lane=${lane.name}${fallbackLabel ? ` quality=${fallbackLabel}` : ""} -> ${result.selected.name}`);
+  setCachedStream(cacheKey, result.selected);
+
+  if (!shouldProxyStream(result.selected, mode)) {
+    console.log(`[Emby] Redirecting ${result.selected.name}`);
+    redirectToStream(response, result.selected);
+    return {
+      openedStream: result.selected,
+      errors: result.errors
+    };
+  }
+
   const opened = await proxyFirstWorkingStream(request, response, result.validated.slice(result.selectedIndex), {
     suppressFinalResponse: true,
     onAttempt: (stream) => setCachedStream(cacheKey, stream),
@@ -979,26 +1023,70 @@ async function openFromPlaybackLane(request, response, streamRequest, profile, s
   };
 }
 
+async function resolveBestStreamForPlayback(streamRequest, profile, slot) {
+  const allErrors = [];
+  const fallbackFilters = profileFallbacks(profile);
+  for (let fallbackIndex = 0; fallbackIndex < fallbackFilters.length; fallbackIndex += 1) {
+    const fallbackFilter = fallbackFilters[fallbackIndex];
+    const fallbackLabel = `${fallbackIndex + 1}/${fallbackFilters.length}`;
+    for (const lane of PLAYBACK_LANES) {
+      const result = await resolveLaneCached(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
+      allErrors.push(...result.errors);
+      if (result.selected) {
+        return {
+          selected: result.selected,
+          errors: allErrors,
+          lane,
+          fallbackLabel
+        };
+      }
+    }
+  }
+
+  return { selected: null, errors: allErrors, lane: null, fallbackLabel: "" };
+}
+
+function triggerPrewarm(streamRequest, profile, slot, cacheKey) {
+  if (getCachedStream(cacheKey) || prewarmPromises.has(cacheKey)) {
+    return;
+  }
+
+  const promise = resolveBestStreamForPlayback(streamRequest, profile, slot)
+    .then((result) => {
+      if (result.selected) {
+        setCachedStream(cacheKey, result.selected);
+        console.log(`[Emby] Prewarmed ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${result.selected.name}`);
+      } else {
+        console.log(`[Emby] Prewarm found no stream for ${streamRequest.type} ${streamRequest.id} profile=${profile}`);
+      }
+    })
+    .catch((error) => {
+      console.log(`[Emby] Prewarm failed ${streamRequest.type} ${streamRequest.id}: ${error.message || error}`);
+    })
+    .finally(() => {
+      prewarmPromises.delete(cacheKey);
+    });
+  prewarmPromises.set(cacheKey, promise);
+}
+
 async function handleEmbyPlayback(request, response, streamRequest) {
   const profile = String(streamRequest.searchParams.get("profile") || "1080p").toLowerCase();
   const slot = Number.parseInt(streamRequest.searchParams.get("slot") || "1", 10) || 1;
-  const mode = String(streamRequest.searchParams.get("mode") || "proxy").toLowerCase();
+  const mode = String(streamRequest.searchParams.get("mode") || EMBY_DEFAULT_MODE).toLowerCase();
   const cacheKey = cacheKeyForRequest(streamRequest, profile, slot);
   const cachedStream = getCachedStream(cacheKey);
 
   if (request.method === "HEAD") {
+    triggerPrewarm(streamRequest, profile, slot, cacheKey);
     writeSyntheticHead(response, profile);
     return;
   }
 
   if (cachedStream) {
     console.log(`[Emby] Cache hit ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${cachedStream.name}`);
-    if (mode === "redirect") {
-      response.writeHead(302, {
-        Location: cachedStream.url,
-        "Access-Control-Allow-Origin": "*"
-      });
-      response.end();
+    if (!shouldProxyStream(cachedStream, mode)) {
+      console.log(`[Emby] Redirecting cached ${cachedStream.name}`);
+      redirectToStream(response, cachedStream);
       return;
     }
     try {
@@ -1025,17 +1113,13 @@ async function handleEmbyPlayback(request, response, streamRequest) {
         allErrors.push(...result.errors);
         if (result.selected) {
           setCachedStream(cacheKey, result.selected);
-          response.writeHead(302, {
-            Location: result.selected.url,
-            "Access-Control-Allow-Origin": "*"
-          });
-          response.end();
+          redirectToStream(response, result.selected);
           return;
         }
         continue;
       }
 
-      const result = await openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, cacheKey, fallbackFilter, fallbackLabel);
+      const result = await openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, cacheKey, mode, fallbackFilter, fallbackLabel);
       allErrors.push(...result.errors);
       if (result.openedStream) {
         setCachedStream(cacheKey, result.openedStream);

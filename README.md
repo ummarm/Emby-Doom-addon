@@ -2,8 +2,8 @@
 
 Emby-Doom-addon is a separate Emby-focused fork of
 [`ummarm/Doom-addon`](https://github.com/ummarm/Doom-addon). It keeps the normal
-Stremio endpoints, and adds clean Emby playback URLs that proxy the selected
-provider stream through this addon.
+Stremio endpoints, and adds clean Emby playback URLs that select a provider
+stream for Emby.
 
 Your original Doom-addon repo is not changed.
 
@@ -27,8 +27,8 @@ This fork adds:
 ```
 
 Those URLs are clean for `.strm` files. When Emby opens one, the addon selects
-the stream, forwards provider headers, preserves Emby's `Range` request, and
-streams the media back to Emby.
+the stream. By default it redirects Emby to clean direct provider URLs, and only
+proxies streams that require provider headers.
 
 ## Run
 
@@ -74,14 +74,16 @@ Slots:
 - `slot=2` second ranked stream
 - `slot=3` third ranked stream
 
-Debug redirect mode:
+Playback modes:
 
 ```text
+?profile=1080p&slot=1&mode=auto
+?profile=1080p&slot=1&mode=proxy
 ?profile=1080p&slot=1&mode=redirect
 ```
 
-Use redirect mode only for testing. Proxy mode is the default and is the Emby
-fix.
+Auto mode is the default. It redirects clean direct URLs and proxies only when
+provider headers are required.
 
 ## Stremio Endpoints
 
