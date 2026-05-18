@@ -1,7 +1,7 @@
 {
   "name": "emby-doom-addon",
   "private": true,
-  "version": "1.0.32",
+  "version": "1.0.33",
   "description": "Emby-friendly Doom-addon fork with clean proxy playback URLs.",
   "license": "GPL-3.0",
   "engines": {

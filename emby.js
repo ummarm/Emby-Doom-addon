@@ -80,6 +80,35 @@ const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
   .split(",")
   .map((provider) => provider.trim())
   .filter(Boolean);
+const EMBY_FAST_PROVIDER_IDS = String(process.env.EMBY_FAST_PROVIDER_IDS || [
+  "moviebox",
+  "movieblast"
+].join(","))
+  .split(",")
+  .map((provider) => provider.trim())
+  .filter(Boolean);
+const EMBY_SLOW_PROVIDER_IDS = String(process.env.EMBY_SLOW_PROVIDER_IDS || [
+  "flix_streams_emby",
+  "flix_streams_vegamovies"
+].join(","))
+  .split(",")
+  .map((provider) => provider.trim())
+  .filter(Boolean);
+const EMBY_FALLBACK_PROVIDER_IDS = String(process.env.EMBY_FALLBACK_PROVIDER_IDS || [
+  "hdhub4u_murph",
+  "hdhub4u_yoruix",
+  "hdhub4u",
+  "hindmoviez",
+  "streamflix",
+  "moviesdrive",
+  "4khdhub_murph",
+  "4khdhub_yoruix",
+  "4khdhub",
+  "4khdhubtv"
+].join(","))
+  .split(",")
+  .map((provider) => provider.trim())
+  .filter(Boolean);
 const EMBY_WAIT_PROVIDER_IDS = String(process.env.EMBY_WAIT_PROVIDER_IDS || [
   "flix_streams_emby",
   "flix_streams_vegamovies"
@@ -88,6 +117,36 @@ const EMBY_WAIT_PROVIDER_IDS = String(process.env.EMBY_WAIT_PROVIDER_IDS || [
   .map((provider) => provider.trim())
   .filter(Boolean);
 const streamCache = new Map();
+
+const PLAYBACK_LANES = [
+  {
+    name: "fast",
+    providerIds: EMBY_FAST_PROVIDER_IDS,
+    waitProviderIds: [],
+    resolveTimeoutMs: Number(process.env.EMBY_FAST_RESOLVE_TIMEOUT_MS || 9000),
+    providerTimeoutMs: Number(process.env.EMBY_FAST_PROVIDER_TIMEOUT_MS || 8000),
+    minCandidates: Number(process.env.EMBY_FAST_MIN_CANDIDATES || 4),
+    validateCandidates: Number(process.env.EMBY_FAST_VALIDATE_CANDIDATES || 6)
+  },
+  {
+    name: "flix",
+    providerIds: EMBY_SLOW_PROVIDER_IDS,
+    waitProviderIds: EMBY_SLOW_PROVIDER_IDS,
+    resolveTimeoutMs: Number(process.env.EMBY_FLIX_RESOLVE_TIMEOUT_MS || 34000),
+    providerTimeoutMs: Number(process.env.EMBY_FLIX_PROVIDER_TIMEOUT_MS || 30000),
+    minCandidates: Number(process.env.EMBY_FLIX_MIN_CANDIDATES || 8),
+    validateCandidates: Number(process.env.EMBY_FLIX_VALIDATE_CANDIDATES || 12)
+  },
+  {
+    name: "fallback",
+    providerIds: EMBY_FALLBACK_PROVIDER_IDS,
+    waitProviderIds: [],
+    resolveTimeoutMs: Number(process.env.EMBY_FALLBACK_RESOLVE_TIMEOUT_MS || 18000),
+    providerTimeoutMs: Number(process.env.EMBY_FALLBACK_PROVIDER_TIMEOUT_MS || 14000),
+    minCandidates: Number(process.env.EMBY_FALLBACK_MIN_CANDIDATES || 10),
+    validateCandidates: Number(process.env.EMBY_FALLBACK_VALIDATE_CANDIDATES || 14)
+  }
+].filter((lane) => lane.providerIds.length > 0);
 
 function streamText(stream) {
   return [
@@ -483,7 +542,11 @@ async function probeSeekableStream(stream) {
 }
 
 async function validateRankedStreams(rankedStreams, desiredIndex) {
-  const probeTargets = rankedStreams.slice(0, Math.max(EMBY_VALIDATE_CANDIDATES, desiredIndex + 1));
+  return validateRankedStreamsWithLimit(rankedStreams, desiredIndex, EMBY_VALIDATE_CANDIDATES);
+}
+
+async function validateRankedStreamsWithLimit(rankedStreams, desiredIndex, validateLimit) {
+  const probeTargets = rankedStreams.slice(0, Math.max(validateLimit, desiredIndex + 1));
   const validated = [];
   const errors = [];
 
@@ -764,14 +827,15 @@ async function proxySelectedStream(request, response, stream) {
   }
 }
 
-async function proxyFirstWorkingStream(request, response, rankedStreams) {
+async function proxyFirstWorkingStream(request, response, rankedStreams, options = {}) {
   const errors = [];
+  const suppressFinalResponse = Boolean(options.suppressFinalResponse);
 
   for (const stream of rankedStreams) {
     try {
       console.log(`[Emby] Trying ${stream.name}`);
       await proxySelectedStream(request, response, stream);
-      return stream;
+      return { openedStream: stream, errors };
     } catch (error) {
       const message = error.name === "AbortError"
         ? `Timed out opening provider after ${UPSTREAM_OPEN_TIMEOUT_MS}ms`
@@ -779,9 +843,13 @@ async function proxyFirstWorkingStream(request, response, rankedStreams) {
       errors.push(`${stream.name}: ${message}`);
       console.log(`[Emby] Skipped ${stream.name}: ${message}`);
       if (response.headersSent) {
-        return stream;
+        return { openedStream: stream, errors };
       }
     }
+  }
+
+  if (suppressFinalResponse) {
+    return { openedStream: null, errors };
   }
 
   response.writeHead(502, {
@@ -789,7 +857,80 @@ async function proxyFirstWorkingStream(request, response, rankedStreams) {
     "Content-Type": "text/plain; charset=utf-8"
   });
   response.end(`No provider stream opened in time.\n${errors.slice(0, 8).join("\n")}`);
-  return null;
+  return { openedStream: null, errors };
+}
+
+function writeSyntheticHead(response, profile) {
+  response.writeHead(200, {
+    "Access-Control-Allow-Origin": "*",
+    "X-Emby-Doom-Proxied": "1",
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-store",
+    "Content-Type": profile === "4k" ? "video/x-matroska" : "video/mp4"
+  });
+  response.end();
+}
+
+async function resolveLane(streamRequest, profile, slot, lane, fallbackFilter = null, fallbackLabel = "") {
+  console.log(`[Emby] Resolve lane=${lane.name}${fallbackLabel ? ` quality=${fallbackLabel}` : ""} ${streamRequest.type} ${streamRequest.id} profile=${profile}`);
+  const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
+    minStreams: Math.max(lane.minCandidates, slot),
+    overallTimeoutMs: lane.resolveTimeoutMs,
+    providerTimeoutMs: lane.providerTimeoutMs,
+    providerIds: lane.providerIds,
+    waitProviderIds: lane.waitProviderIds
+  });
+
+  let lastValidation = { validated: [], errors: [] };
+  const fallbackFilters = fallbackFilter ? [fallbackFilter] : profileFallbacks(profile);
+  for (const fallback of fallbackFilters) {
+    const rankedStreams = rankStreams(streams.filter(fallback), profile, false);
+    if (rankedStreams.length === 0) {
+      continue;
+    }
+
+    const validation = await validateRankedStreamsWithLimit(
+      rankedStreams,
+      Math.max(0, slot - 1),
+      lane.validateCandidates
+    );
+    lastValidation = validation;
+    if (validation.validated.length > 0) {
+      const selectedIndex = Math.min(Math.max(slot - 1, 0), validation.validated.length - 1);
+      return {
+        lane,
+        selectedIndex,
+        selected: validation.validated[selectedIndex],
+        validated: validation.validated,
+        errors: validation.errors
+      };
+    }
+  }
+
+  return {
+    lane,
+    selectedIndex: -1,
+    selected: null,
+    validated: [],
+    errors: lastValidation.errors
+  };
+}
+
+async function openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, fallbackFilter = null, fallbackLabel = "") {
+  const result = await resolveLane(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
+  if (!result.selected) {
+    console.log(`[Emby] Lane ${lane.name}${fallbackLabel ? ` ${fallbackLabel}` : ""} found no playable candidate`);
+    return { openedStream: null, errors: result.errors };
+  }
+
+  console.log(`[Emby] ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} lane=${lane.name}${fallbackLabel ? ` quality=${fallbackLabel}` : ""} -> ${result.selected.name}`);
+  const opened = await proxyFirstWorkingStream(request, response, result.validated.slice(result.selectedIndex), {
+    suppressFinalResponse: true
+  });
+  return {
+    openedStream: opened.openedStream,
+    errors: [...result.errors, ...opened.errors]
+  };
 }
 
 async function handleEmbyPlayback(request, response, streamRequest) {
@@ -798,6 +939,11 @@ async function handleEmbyPlayback(request, response, streamRequest) {
   const mode = String(streamRequest.searchParams.get("mode") || "proxy").toLowerCase();
   const cacheKey = cacheKeyForRequest(streamRequest, profile, slot);
   const cachedStream = getCachedStream(cacheKey);
+
+  if (request.method === "HEAD") {
+    writeSyntheticHead(response, profile);
+    return;
+  }
 
   if (cachedStream) {
     console.log(`[Emby] Cache hit ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${cachedStream.name}`);
@@ -822,60 +968,44 @@ async function handleEmbyPlayback(request, response, streamRequest) {
     }
   }
 
-  const streams = await getStreamsFast(streamRequest.type, streamRequest.id, {
-    minStreams: Math.max(EMBY_MIN_CANDIDATES, slot),
-    overallTimeoutMs: EMBY_RESOLVE_TIMEOUT_MS,
-    providerTimeoutMs: EMBY_PROVIDER_TIMEOUT_MS,
-    providerIds: EMBY_PROVIDER_IDS,
-    waitProviderIds: EMBY_WAIT_PROVIDER_IDS
+  const allErrors = [];
+  const fallbackFilters = profileFallbacks(profile);
+  for (let fallbackIndex = 0; fallbackIndex < fallbackFilters.length; fallbackIndex += 1) {
+    const fallbackFilter = fallbackFilters[fallbackIndex];
+    const fallbackLabel = `${fallbackIndex + 1}/${fallbackFilters.length}`;
+    for (const lane of PLAYBACK_LANES) {
+      if (mode === "redirect") {
+        const result = await resolveLane(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
+        allErrors.push(...result.errors);
+        if (result.selected) {
+          setCachedStream(cacheKey, result.selected);
+          response.writeHead(302, {
+            Location: result.selected.url,
+            "Access-Control-Allow-Origin": "*"
+          });
+          response.end();
+          return;
+        }
+        continue;
+      }
+
+      const result = await openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
+      allErrors.push(...result.errors);
+      if (result.openedStream) {
+        setCachedStream(cacheKey, result.openedStream);
+        return;
+      }
+      if (response.headersSent) {
+        return;
+      }
+    }
+  }
+
+  response.writeHead(404, {
+    "Access-Control-Allow-Origin": "*",
+    "Content-Type": "text/plain; charset=utf-8"
   });
-  let validation = { validated: [], errors: [] };
-  let rankedStreams = [];
-  for (const fallback of profileFallbacks(profile)) {
-    rankedStreams = rankStreams(streams.filter(fallback), profile, false);
-    if (rankedStreams.length === 0) {
-      continue;
-    }
-    validation = await validateRankedStreams(rankedStreams, Math.max(0, slot - 1));
-    if (validation.validated.length > 0) {
-      break;
-    }
-  }
-  const selectedIndex = Math.min(Math.max(slot - 1, 0), validation.validated.length - 1);
-  const selected = validation.validated[selectedIndex];
-
-  if (!selected) {
-    response.writeHead(404, {
-      "Access-Control-Allow-Origin": "*",
-      "Content-Type": "text/plain; charset=utf-8"
-    });
-    response.end(`No seekable streams found for ${streamRequest.type} ${streamRequest.id}\n${validation.errors.slice(0, 12).join("\n")}`);
-    return;
-  }
-
-  console.log(`[Emby] ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${selected.name}`);
-
-  if (mode === "redirect") {
-    setCachedStream(cacheKey, selected);
-    response.writeHead(302, {
-      Location: selected.url,
-      "Access-Control-Allow-Origin": "*"
-    });
-    response.end();
-    return;
-  }
-
-  if (request.method === "HEAD") {
-    setCachedStream(cacheKey, selected);
-    response.writeHead(200, syntheticHeadersForStream(selected));
-    response.end();
-    return;
-  }
-
-  const openedStream = await proxyFirstWorkingStream(request, response, validation.validated.slice(selectedIndex));
-  if (openedStream) {
-    setCachedStream(cacheKey, openedStream);
-  }
+  response.end(`No seekable streams found for ${streamRequest.type} ${streamRequest.id}\n${allErrors.slice(0, 12).join("\n")}`);
 }
 
 async function handleEmbyDebug(response, streamRequest) {

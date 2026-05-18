@@ -7,6 +7,9 @@ services:
       HOST: 0.0.0.0
       PORT: 7000
       EMBY_PROVIDER_IDS: flix_streams_emby,flix_streams_vegamovies,moviebox,streamflix,hindmoviez,hdhub4u,hdhub4u_yoruix,hdhub4u_murph,moviesdrive,4khdhub,4khdhub_yoruix,4khdhub_murph,4khdhubtv,movieblast
+      EMBY_FAST_PROVIDER_IDS: moviebox,movieblast
+      EMBY_SLOW_PROVIDER_IDS: flix_streams_emby,flix_streams_vegamovies
+      EMBY_FALLBACK_PROVIDER_IDS: hdhub4u_murph,hdhub4u_yoruix,hdhub4u,hindmoviez,streamflix,moviesdrive,4khdhub_murph,4khdhub_yoruix,4khdhub,4khdhubtv
       EMBY_WAIT_PROVIDER_IDS: flix_streams_emby,flix_streams_vegamovies
       FLIX_STREAMS_TIMEOUT_MS: 30000
     ports:
