@@ -78,8 +78,9 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "PUT_YOUR_TMDB_API_KEY_HERE")
 # Your Emby-Doom-addon base URL. This should point at the Node addon created in
 # this repo, not your original Doom-addon deployment.
 ADDON_PUBLIC_URL = os.environ.get("ADDON_PUBLIC_URL", "https://emby-doom-addon.zxflix.com")
-ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.0.37")
+ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.0.38")
 STRM_URL_VERSION = os.environ.get("STRM_URL_VERSION", f"emby-doom-{ADDON_VERSION}")
+STRM_PATH_TOKEN = re.sub(r"[^A-Za-z0-9._-]+", "-", STRM_URL_VERSION).strip("-")
 
 # Legacy only: your original Doom addon base URL. The new .strm files do not use
 # this directly.
@@ -308,16 +309,20 @@ def clean_strm_files(folder: Path):
     return removed
 
 
+def strm_media_filename(profile: str) -> str:
+    return f"{profile}-{STRM_PATH_TOKEN}.mkv"
+
+
 def movie_strm_urls(imdb_id: str):
     return {
-        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(profile)}.mkv?{strm_query(profile, slot)}"
+        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
         for label, profile, slot in STRM_VARIANTS
     }
 
 
 def episode_strm_urls(imdb_id: str, season: int, episode: int):
     return {
-        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?{strm_query(profile, slot)}"
+        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
         for label, profile, slot in STRM_VARIANTS
     }
 
@@ -351,20 +356,26 @@ def media_style_strm_url(value: str) -> str:
 
     movie_match = re.match(r"^/emby/movie/(tt\d+)(?:/[^/]+\.(?:mkv|mp4|webm))?$", parts.path, re.I)
     if movie_match:
-        new_path = f"/emby/movie/{movie_match.group(1)}/{quote(profile)}.mkv"
+        new_path = f"/emby/movie/{movie_match.group(1)}/{quote(strm_media_filename(profile))}"
         return urlunsplit((parts.scheme, parts.netloc, new_path, new_query, parts.fragment))
 
     series_match = re.match(r"^/emby/series/(tt\d+)/(\d+)/(\d+)(?:/[^/]+\.(?:mkv|mp4|webm))?$", parts.path, re.I)
     if series_match:
-        new_path = f"/emby/series/{series_match.group(1)}/{series_match.group(2)}/{series_match.group(3)}/{quote(profile)}.mkv"
+        new_path = f"/emby/series/{series_match.group(1)}/{series_match.group(2)}/{series_match.group(3)}/{quote(strm_media_filename(profile))}"
         return urlunsplit((parts.scheme, parts.netloc, new_path, new_query, parts.fragment))
 
     return url
 
 
+def versioned_strm_path(path: Path) -> Path:
+    stem = re.sub(r" - emby-doom-\d+(?:\.\d+){1,3}$", "", path.stem, flags=re.I)
+    return path.with_name(f"{stem} - {STRM_PATH_TOKEN}.strm")
+
+
 def repair_strm_urls():
     scanned = 0
     updated = 0
+    renamed = 0
     roots = [MOVIES_DIR, SHOWS_DIR]
 
     for root in roots:
@@ -381,10 +392,20 @@ def repair_strm_urls():
                     path.write_text(new_text + "\n", encoding="utf-8")
                     updated += 1
                     log(f"Repaired {path}")
+                new_path = versioned_strm_path(path)
+                if new_path != path:
+                    if new_path.exists():
+                        new_path.unlink()
+                    path.rename(new_path)
+                    path = new_path
+                    renamed += 1
+                    log(f"Renamed STRM for Emby refresh: {path}")
+                now = time.time()
+                os.utime(path, (now, now))
             except Exception as e:
                 log(f"Could not repair {path}: {e}")
 
-    log(f"Finished STRM repair. Scanned {scanned}, updated {updated}.")
+    log(f"Finished STRM repair. Scanned {scanned}, updated {updated}, renamed {renamed}.")
     emby_scan()
 
 
@@ -407,7 +428,7 @@ def create_movie_item(item):
 
     count = 0
     for label, url in movie_strm_urls(imdb_id).items():
-        file_name = safe_name(f"{folder_name} - {label}.strm")
+        file_name = safe_name(f"{folder_name} - {label} - {STRM_PATH_TOKEN}.strm")
         if write_file(movie_dir / file_name, url):
             count += 1
 
@@ -459,7 +480,7 @@ def create_show_item(item):
             ep_title = safe_name(ep.get("name") or f"Episode {en}")
             prefix = safe_name(f"{folder_name} - S{sn:02d}E{en:02d} - {ep_title}")
             for label, url in episode_strm_urls(imdb_id, sn, en).items():
-                file_name = safe_name(f"{prefix} - {label}.strm")
+                file_name = safe_name(f"{prefix} - {label} - {STRM_PATH_TOKEN}.strm")
                 if write_file(season_dir / file_name, url):
                     count += 1
 
@@ -629,9 +650,9 @@ def resolve_and_redirect(kind: str, imdb_id: str, season=None, episode=None):
 
     try:
         if kind == "movie":
-            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(profile)}.mkv?{strm_query(profile, slot)}"
+            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
         else:
-            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(profile)}.mkv?{strm_query(profile, slot)}"
+            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
 
         log(f"LEGACY PLAY {kind} {imdb_id} profile={profile} slot={slot} -> {final_url}")
         return redirect(final_url, code=302)
