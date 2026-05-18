@@ -60,7 +60,7 @@ const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 
 const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
 const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 10);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
-const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 900000);
+const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 240000);
 const EMBY_DEFAULT_MODE = String(process.env.EMBY_DEFAULT_MODE || "auto").toLowerCase();
 const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
   "flix_streams_emby",
@@ -122,6 +122,15 @@ const laneResolvePromises = new Map();
 const prewarmPromises = new Map();
 
 const PLAYBACK_LANES = [
+  {
+    name: "quick",
+    providerIds: EMBY_PROVIDER_IDS,
+    waitProviderIds: [],
+    resolveTimeoutMs: Number(process.env.EMBY_QUICK_RESOLVE_TIMEOUT_MS || 7000),
+    providerTimeoutMs: Number(process.env.EMBY_QUICK_PROVIDER_TIMEOUT_MS || 7000),
+    minCandidates: Number(process.env.EMBY_QUICK_MIN_CANDIDATES || 1),
+    validateCandidates: Number(process.env.EMBY_QUICK_VALIDATE_CANDIDATES || 4)
+  },
   {
     name: "fast",
     providerIds: EMBY_FAST_PROVIDER_IDS,
@@ -381,7 +390,7 @@ function requestHeadersForStream(stream, incomingRequest) {
     && stream.behaviorHints.proxyHeaders.request;
   const headers = Object.assign({}, proxyHeaders || {});
 
-  if (incomingRequest.headers.range && !headers.Range && !headers.range) {
+  if (incomingRequest.headers.range) {
     headers.Range = incomingRequest.headers.range;
   }
   if (!headers["User-Agent"] && !headers["user-agent"]) {
@@ -959,16 +968,29 @@ async function proxyFirstWorkingStream(request, response, rankedStreams, options
   const onOpened = typeof options.onOpened === "function" ? options.onOpened : null;
 
   for (const stream of rankedStreams) {
+    const headersAlreadySent = response.headersSent;
     try {
       console.log(`[Emby] Trying ${stream.name}`);
       if (onAttempt) {
         onAttempt(stream);
       }
       await proxySelectedStream(request, response, stream);
-      if (onOpened) {
-        onOpened(stream);
+      if (!headersAlreadySent && response.headersSent) {
+        if (onOpened) {
+          onOpened(stream);
+        }
+        return { openedStream: stream, errors };
       }
-      return { openedStream: stream, errors };
+      if (headersAlreadySent) {
+        return { openedStream: null, errors, responseCommitted: true };
+      }
+
+      const message = "Stream opened but no bytes delivered to client";
+      errors.push(`${stream.name}: ${message}`);
+      console.log(`[Emby] Skipped ${stream.name}: ${message}`);
+      if (onFailure) {
+        onFailure(stream, new Error(message));
+      }
     } catch (error) {
       const message = error.name === "AbortError"
         ? `Timed out opening provider after ${UPSTREAM_OPEN_TIMEOUT_MS}ms`

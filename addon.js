@@ -5,6 +5,9 @@ const path = require("path");
 
 const ROOT = __dirname;
 const TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
+if (!process.env.TMDB_API_KEY) {
+  console.warn("[TMDB] WARNING: Using hardcoded fallback TMDB_API_KEY. Set TMDB_API_KEY env var to avoid silent failures if this key is revoked.");
+}
 const DEFAULT_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 45000);
 const FAST_PROVIDER_TIMEOUT_MS = Number(process.env.FAST_PROVIDER_TIMEOUT_MS || 12000);
 const FAST_OVERALL_TIMEOUT_MS = Number(process.env.FAST_OVERALL_TIMEOUT_MS || 15000);

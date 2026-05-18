@@ -9,6 +9,13 @@ const { handleEmbyDebug, handleEmbyPlayback, parseEmbyPath } = require("./emby")
 const PORT = Number(process.env.PORT || 7000);
 const HOST = process.env.HOST || "0.0.0.0";
 const ASSETS_DIR = path.join(__dirname, "assets");
+let ICON_BUFFER = null;
+
+try {
+  ICON_BUFFER = fs.readFileSync(path.join(ASSETS_DIR, "umbrella-icon.png"));
+} catch (error) {
+  console.warn("[Server] Could not preload umbrella-icon.png:", error.message);
+}
 
 function sendJson(response, statusCode, payload, cacheSeconds = 0) {
   const body = JSON.stringify(payload);
@@ -55,6 +62,10 @@ function parseStreamPath(pathname) {
 }
 
 const server = http.createServer(async (request, response) => {
+  request.on("error", (error) => {
+    console.error(`[HTTP] Request error: ${error.message}`);
+  });
+
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     console.log(`[HTTP] ${request.method} ${url.pathname}${url.search}`);
@@ -84,7 +95,17 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (url.pathname === "/assets/umbrella-icon.png") {
-      sendFile(response, 200, path.join(ASSETS_DIR, "umbrella-icon.png"), "image/png", 86400);
+      if (!ICON_BUFFER) {
+        sendJson(response, 404, { error: "Icon not found" });
+        return;
+      }
+      response.writeHead(200, {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=86400",
+        "Content-Length": ICON_BUFFER.length
+      });
+      response.end(ICON_BUFFER);
       return;
     }
 

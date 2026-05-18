@@ -12,6 +12,11 @@ services:
       EMBY_SLOW_PROVIDER_IDS: flix_streams_emby,flix_streams_vegamovies
       EMBY_FALLBACK_PROVIDER_IDS: hdhub4u_murph,hdhub4u_yoruix,hdhub4u,hindmoviez,streamflix,moviesdrive,4khdhub_murph,4khdhub_yoruix,4khdhub,4khdhubtv
       EMBY_WAIT_PROVIDER_IDS: flix_streams_emby,flix_streams_vegamovies
+      EMBY_QUICK_RESOLVE_TIMEOUT_MS: 7000
+      EMBY_QUICK_PROVIDER_TIMEOUT_MS: 7000
+      EMBY_QUICK_MIN_CANDIDATES: 1
+      EMBY_QUICK_VALIDATE_CANDIDATES: 4
+      STREAM_CACHE_TTL_MS: 240000
       EMBY_VALIDATE_CONCURRENCY: 8
       EMBY_VALIDATE_CANDIDATES: 10
       FLIX_STREAMS_TIMEOUT_MS: 30000

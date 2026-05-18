@@ -78,7 +78,7 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "PUT_YOUR_TMDB_API_KEY_HERE")
 # Your Emby-Doom-addon base URL. This should point at the Node addon created in
 # this repo, not your original Doom-addon deployment.
 ADDON_PUBLIC_URL = os.environ.get("ADDON_PUBLIC_URL", "https://emby-doom-addon.zxflix.com")
-ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.0.38")
+ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.0.39")
 STRM_URL_VERSION = os.environ.get("STRM_URL_VERSION", f"emby-doom-{ADDON_VERSION}")
 STRM_PATH_TOKEN = re.sub(r"[^A-Za-z0-9._-]+", "-", STRM_URL_VERSION).strip("-")
 
@@ -315,14 +315,14 @@ def strm_media_filename(profile: str) -> str:
 
 def movie_strm_urls(imdb_id: str):
     return {
-        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
+        label: f"{ADDON_PUBLIC_URL.rstrip('/')}/emby/movie/{quote(imdb_id)}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
         for label, profile, slot in STRM_VARIANTS
     }
 
 
 def episode_strm_urls(imdb_id: str, season: int, episode: int):
     return {
-        label: f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
+        label: f"{ADDON_PUBLIC_URL.rstrip('/')}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
         for label, profile, slot in STRM_VARIANTS
     }
 
@@ -543,15 +543,25 @@ def sync_catalog():
 
 def fetch_doom_streams(kind: str, imdb_id: str, season=None, episode=None):
     if kind == "movie":
-        url = f"{DOOM_ADDON_BASE.rstrip()}/stream/movie/{imdb_id}.json"
+        url = f"{DOOM_ADDON_BASE.rstrip('/')}/stream/movie/{imdb_id}.json"
     else:
-        url = f"{DOOM_ADDON_BASE.rstrip()}/stream/series/{imdb_id}:{season}:{episode}.json"
+        url = f"{DOOM_ADDON_BASE.rstrip('/')}/stream/series/{imdb_id}:{season}:{episode}.json"
 
-    r = session.get(url, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-    data = r.json()
-    streams = data.get("streams") or []
-    return streams
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            r = session.get(url, timeout=REQUEST_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+            streams = data.get("streams") or []
+            return streams
+        except Exception as e:
+            last_error = e
+            log(f"fetch_doom_streams attempt {attempt}/3 failed: {e}")
+            if attempt < 3:
+                time.sleep(2)
+
+    raise RuntimeError(f"fetch_doom_streams failed after 3 attempts: {last_error}")
 
 
 def text_of_stream(stream):
@@ -642,7 +652,13 @@ def rank_streams(streams, profile: str, slot: int):
 
 
 def resolve_and_redirect(kind: str, imdb_id: str, season=None, episode=None):
+    if not re.match(r"^tt\d+$", imdb_id, re.I):
+        log(f"Bridge rejected invalid imdb_id: {imdb_id!r}")
+        return Response(f"Invalid IMDb ID: {imdb_id}", status=400, mimetype="text/plain")
+
     profile = request.args.get("profile", "1080p").lower()
+    if profile not in {"1080p", "4k"}:
+        profile = "1080p"
     try:
         slot = int(request.args.get("slot", "1"))
     except Exception:
@@ -650,9 +666,9 @@ def resolve_and_redirect(kind: str, imdb_id: str, season=None, episode=None):
 
     try:
         if kind == "movie":
-            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/movie/{quote(imdb_id)}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
+            final_url = f"{ADDON_PUBLIC_URL.rstrip('/')}/emby/movie/{quote(imdb_id)}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
         else:
-            final_url = f"{ADDON_PUBLIC_URL.rstrip()}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
+            final_url = f"{ADDON_PUBLIC_URL.rstrip('/')}/emby/series/{quote(imdb_id)}/{season}/{episode}/{quote(strm_media_filename(profile))}?{strm_query(profile, slot)}"
 
         log(f"LEGACY PLAY {kind} {imdb_id} profile={profile} slot={slot} -> {final_url}")
         return redirect(final_url, code=302)
@@ -682,7 +698,13 @@ def run_server():
     log(f"Bridge running on 0.0.0.0:8787")
     log(f"New .strm files should use Emby-Doom-addon: {ADDON_PUBLIC_URL}")
     log(f"Legacy bridge URLs will redirect to Emby-Doom-addon instead of raw provider URLs.")
-    app.run(host="0.0.0.0", port=8787, threaded=True)
+    try:
+        from waitress import serve as waitress_serve
+        log("Using waitress WSGI server.")
+        waitress_serve(app, host="0.0.0.0", port=8787)
+    except ImportError:
+        log("waitress not installed. Falling back to Flask dev server.")
+        app.run(host="0.0.0.0", port=8787, threaded=True)
 
 
 def main():
