@@ -58,8 +58,8 @@ const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 6000);
 const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 32000);
 const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 30000);
 const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
-const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 18);
-const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 4);
+const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 10);
+const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
 const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 900000);
 const EMBY_DEFAULT_MODE = String(process.env.EMBY_DEFAULT_MODE || "auto").toLowerCase();
 const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
@@ -394,6 +394,46 @@ function requestHeadersForStream(stream, incomingRequest) {
   return headers;
 }
 
+function parseRangeHeader(value) {
+  const match = String(value || "").match(/^bytes=(\d*)-(\d*)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const start = match[1] === "" ? null : Number(match[1]);
+  const end = match[2] === "" ? null : Number(match[2]);
+  if ((start !== null && !Number.isSafeInteger(start))
+    || (end !== null && !Number.isSafeInteger(end))
+    || (start !== null && end !== null && end < start)) {
+    return null;
+  }
+
+  return { start, end };
+}
+
+function requestedRangeLength(rangeHeader) {
+  const range = parseRangeHeader(rangeHeader);
+  if (!range || range.start === null || range.end === null) {
+    return 0;
+  }
+  return range.end - range.start + 1;
+}
+
+function isMidFileRange(rangeHeader) {
+  const range = parseRangeHeader(rangeHeader);
+  return Boolean(range && Number.isSafeInteger(range.start) && range.start > 0);
+}
+
+function mediaContentTypeLooksUsable(contentType) {
+  const normalizedType = String(contentType || "").toLowerCase();
+  return normalizedType.startsWith("video/")
+    || normalizedType.includes("octet-stream")
+    || normalizedType.includes("matroska")
+    || normalizedType.includes("mp4")
+    || normalizedType.includes("mpeg")
+    || normalizedType.includes("webm");
+}
+
 function cacheKeyForRequest(streamRequest, profile, slot) {
   return `${streamRequest.type}:${streamRequest.id}:${profile}:${slot}`;
 }
@@ -671,6 +711,55 @@ function writeProxyHeaders(response, upstreamResponse, stream) {
   response.writeHead(upstreamResponse.status, headers);
 }
 
+function hasUsefulHeadHeaders(upstreamResponse) {
+  if (!upstreamResponse) {
+    return false;
+  }
+
+  const contentLength = Number(upstreamResponse.headers.get("content-length") || 0);
+  const contentRange = upstreamResponse.headers.get("content-range") || "";
+  return contentLength > 0 || /^bytes\s+/i.test(contentRange);
+}
+
+async function proxyHeadStream(request, response, stream) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_OPEN_TIMEOUT_MS);
+
+  try {
+    let upstreamResponse = await fetch(stream.url, {
+      method: "HEAD",
+      headers: requestHeadersForStream(stream, request),
+      redirect: "follow",
+      signal: controller.signal
+    });
+
+    if (!upstreamResponse.ok || !hasUsefulHeadHeaders(upstreamResponse)) {
+      const headers = requestHeadersForStream(stream, request);
+      if (!headers.Range && !headers.range) {
+        headers.Range = "bytes=0-0";
+      }
+      upstreamResponse = await fetch(stream.url, {
+        method: "GET",
+        headers,
+        redirect: "follow",
+        signal: controller.signal
+      });
+      if (upstreamResponse.body && typeof upstreamResponse.body.cancel === "function") {
+        await upstreamResponse.body.cancel().catch(() => {});
+      }
+    }
+
+    if (!upstreamResponse.ok) {
+      throw new Error(`Provider returned HTTP ${upstreamResponse.status}`);
+    }
+
+    writeProxyHeaders(response, upstreamResponse, stream);
+    response.end();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function readChunkWithTimeout(reader, timeoutMs, label) {
   let timeout;
   const timeoutPromise = new Promise((_, reject) => {
@@ -725,11 +814,16 @@ async function writeResponseChunk(response, buffer) {
   return !response.destroyed && !response.writableEnded;
 }
 
-async function readInitialMediaBuffer(reader, contentType) {
+async function readInitialMediaBuffer(reader, contentType, rangeHeader = "") {
   const chunks = [];
   let totalBytes = 0;
+  const rangeLength = requestedRangeLength(rangeHeader);
+  const minimumBytes = rangeLength > 0
+    ? Math.min(FIRST_MEDIA_BUFFER_BYTES, rangeLength)
+    : FIRST_MEDIA_BUFFER_BYTES;
+  const midFileRange = isMidFileRange(rangeHeader);
 
-  while (totalBytes < FIRST_MEDIA_BUFFER_BYTES) {
+  while (totalBytes < minimumBytes) {
     const read = await readChunkWithTimeout(reader, FIRST_CHUNK_TIMEOUT_MS, "first media chunk");
     if (read.done || !read.value || read.value.length === 0) {
       break;
@@ -744,7 +838,7 @@ async function readInitialMediaBuffer(reader, contentType) {
     if (looksLikeBadProbeBody(text, contentType)) {
       throw new Error(`Provider sent non-media body ${contentType || "unknown"}`);
     }
-    if (looksLikeMediaSample(sample, contentType) && totalBytes >= FIRST_MEDIA_BUFFER_BYTES) {
+    if (looksLikeMediaSample(sample, contentType) && totalBytes >= minimumBytes) {
       break;
     }
   }
@@ -758,10 +852,13 @@ async function readInitialMediaBuffer(reader, contentType) {
   if (looksLikeBadProbeBody(mediaSampleText(sample), contentType)) {
     throw new Error(`Provider sent non-media body ${contentType || "unknown"}`);
   }
+  if (midFileRange && mediaContentTypeLooksUsable(contentType)) {
+    return buffer;
+  }
   if (!looksLikeMediaSample(sample, contentType)) {
     throw new Error(`Provider first bytes are not playable media ${contentType || "unknown"}`);
   }
-  if (buffer.length < FIRST_MEDIA_BUFFER_BYTES) {
+  if (buffer.length < minimumBytes) {
     throw new Error(`Provider only sent ${buffer.length} initial bytes before stalling`);
   }
 
@@ -809,7 +906,7 @@ async function proxySelectedStream(request, response, stream) {
 
   try {
     const contentType = upstreamResponse.headers.get("content-type") || "";
-    const firstBuffer = await readInitialMediaBuffer(reader, contentType);
+    const firstBuffer = await readInitialMediaBuffer(reader, contentType, request.headers.range || "");
 
     writeProxyHeaders(response, upstreamResponse, stream);
     headersCommitted = true;
@@ -879,10 +976,10 @@ async function proxyFirstWorkingStream(request, response, rankedStreams, options
       errors.push(`${stream.name}: ${message}`);
       console.log(`[Emby] Skipped ${stream.name}: ${message}`);
       if (response.headersSent) {
-        if (onOpened) {
-          onOpened(stream);
+        if (onFailure) {
+          onFailure(stream, error);
         }
-        return { openedStream: stream, errors };
+        return { openedStream: null, errors, responseCommitted: true };
       }
       if (onFailure) {
         onFailure(stream, error);
@@ -1046,6 +1143,45 @@ async function resolveBestStreamForPlayback(streamRequest, profile, slot) {
   return { selected: null, errors: allErrors, lane: null, fallbackLabel: "" };
 }
 
+async function handleHeadPlayback(request, response, streamRequest, profile, slot, mode, cacheKey, cachedStream) {
+  if (cachedStream) {
+    console.log(`[Emby] HEAD cache hit ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${cachedStream.name}`);
+    if (mode === "redirect") {
+      redirectToStream(response, cachedStream);
+      return;
+    }
+    try {
+      await proxyHeadStream(request, response, cachedStream);
+      return;
+    } catch (error) {
+      clearCachedStream(cacheKey, cachedStream);
+      console.log(`[Emby] HEAD cached stream failed: ${error.message || error}`);
+      if (response.headersSent) {
+        return;
+      }
+    }
+  }
+
+  const result = await resolveBestStreamForPlayback(streamRequest, profile, slot);
+  if (result.selected) {
+    setCachedStream(cacheKey, result.selected);
+    console.log(`[Emby] HEAD resolved ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${result.selected.name}`);
+    if (mode === "redirect") {
+      redirectToStream(response, result.selected);
+      return;
+    }
+    await proxyHeadStream(request, response, result.selected);
+    return;
+  }
+
+  response.writeHead(404, {
+    "Access-Control-Allow-Origin": "*",
+    "Content-Type": "text/plain; charset=utf-8",
+    ...noStoreHeaders()
+  });
+  response.end(`No seekable streams found for ${streamRequest.type} ${streamRequest.id}\n${result.errors.slice(0, 12).join("\n")}`);
+}
+
 function triggerPrewarm(streamRequest, profile, slot, cacheKey) {
   if (getCachedStream(cacheKey) || prewarmPromises.has(cacheKey)) {
     return;
@@ -1078,7 +1214,7 @@ async function handleEmbyPlayback(request, response, streamRequest) {
 
   if (request.method === "HEAD") {
     triggerPrewarm(streamRequest, profile, slot, cacheKey);
-    writeSyntheticHead(response, profile);
+    await handleHeadPlayback(request, response, streamRequest, profile, slot, mode, cacheKey, cachedStream);
     return;
   }
 
