@@ -117,6 +117,7 @@ const EMBY_WAIT_PROVIDER_IDS = String(process.env.EMBY_WAIT_PROVIDER_IDS || [
   .map((provider) => provider.trim())
   .filter(Boolean);
 const streamCache = new Map();
+const laneResolvePromises = new Map();
 
 const PLAYBACK_LANES = [
   {
@@ -419,6 +420,18 @@ function setCachedStream(cacheKey, stream) {
     stream,
     expiresAt: Date.now() + STREAM_CACHE_TTL_MS
   });
+}
+
+function clearCachedStream(cacheKey, stream = null) {
+  if (!stream) {
+    streamCache.delete(cacheKey);
+    return;
+  }
+
+  const cached = streamCache.get(cacheKey);
+  if (cached && cached.stream && cached.stream.url === stream.url) {
+    streamCache.delete(cacheKey);
+  }
 }
 
 function probeHeadersForStream(stream) {
@@ -830,11 +843,20 @@ async function proxySelectedStream(request, response, stream) {
 async function proxyFirstWorkingStream(request, response, rankedStreams, options = {}) {
   const errors = [];
   const suppressFinalResponse = Boolean(options.suppressFinalResponse);
+  const onAttempt = typeof options.onAttempt === "function" ? options.onAttempt : null;
+  const onFailure = typeof options.onFailure === "function" ? options.onFailure : null;
+  const onOpened = typeof options.onOpened === "function" ? options.onOpened : null;
 
   for (const stream of rankedStreams) {
     try {
       console.log(`[Emby] Trying ${stream.name}`);
+      if (onAttempt) {
+        onAttempt(stream);
+      }
       await proxySelectedStream(request, response, stream);
+      if (onOpened) {
+        onOpened(stream);
+      }
       return { openedStream: stream, errors };
     } catch (error) {
       const message = error.name === "AbortError"
@@ -843,7 +865,13 @@ async function proxyFirstWorkingStream(request, response, rankedStreams, options
       errors.push(`${stream.name}: ${message}`);
       console.log(`[Emby] Skipped ${stream.name}: ${message}`);
       if (response.headersSent) {
+        if (onOpened) {
+          onOpened(stream);
+        }
         return { openedStream: stream, errors };
+      }
+      if (onFailure) {
+        onFailure(stream, error);
       }
     }
   }
@@ -916,8 +944,23 @@ async function resolveLane(streamRequest, profile, slot, lane, fallbackFilter = 
   };
 }
 
-async function openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, fallbackFilter = null, fallbackLabel = "") {
-  const result = await resolveLane(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
+async function resolveLaneCached(streamRequest, profile, slot, lane, fallbackFilter = null, fallbackLabel = "") {
+  const key = `${streamRequest.type}:${streamRequest.id}:${profile}:${slot}:${lane.name}:${fallbackLabel || "all"}`;
+  if (laneResolvePromises.has(key)) {
+    console.log(`[Emby] Join in-flight resolve ${key}`);
+    return laneResolvePromises.get(key);
+  }
+
+  const promise = resolveLane(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel)
+    .finally(() => {
+      laneResolvePromises.delete(key);
+    });
+  laneResolvePromises.set(key, promise);
+  return promise;
+}
+
+async function openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, cacheKey, fallbackFilter = null, fallbackLabel = "") {
+  const result = await resolveLaneCached(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
   if (!result.selected) {
     console.log(`[Emby] Lane ${lane.name}${fallbackLabel ? ` ${fallbackLabel}` : ""} found no playable candidate`);
     return { openedStream: null, errors: result.errors };
@@ -925,7 +968,10 @@ async function openFromPlaybackLane(request, response, streamRequest, profile, s
 
   console.log(`[Emby] ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} lane=${lane.name}${fallbackLabel ? ` quality=${fallbackLabel}` : ""} -> ${result.selected.name}`);
   const opened = await proxyFirstWorkingStream(request, response, result.validated.slice(result.selectedIndex), {
-    suppressFinalResponse: true
+    suppressFinalResponse: true,
+    onAttempt: (stream) => setCachedStream(cacheKey, stream),
+    onFailure: (stream) => clearCachedStream(cacheKey, stream),
+    onOpened: (stream) => setCachedStream(cacheKey, stream)
   });
   return {
     openedStream: opened.openedStream,
@@ -960,7 +1006,7 @@ async function handleEmbyPlayback(request, response, streamRequest) {
       await proxySelectedStream(request, response, cachedStream);
       return;
     } catch (error) {
-      streamCache.delete(cacheKey);
+      clearCachedStream(cacheKey, cachedStream);
       console.log(`[Emby] Cached stream failed: ${error.message || error}`);
       if (response.headersSent) {
         return;
@@ -975,7 +1021,7 @@ async function handleEmbyPlayback(request, response, streamRequest) {
     const fallbackLabel = `${fallbackIndex + 1}/${fallbackFilters.length}`;
     for (const lane of PLAYBACK_LANES) {
       if (mode === "redirect") {
-        const result = await resolveLane(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
+        const result = await resolveLaneCached(streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
         allErrors.push(...result.errors);
         if (result.selected) {
           setCachedStream(cacheKey, result.selected);
@@ -989,7 +1035,7 @@ async function handleEmbyPlayback(request, response, streamRequest) {
         continue;
       }
 
-      const result = await openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, fallbackFilter, fallbackLabel);
+      const result = await openFromPlaybackLane(request, response, streamRequest, profile, slot, lane, cacheKey, fallbackFilter, fallbackLabel);
       allErrors.push(...result.errors);
       if (result.openedStream) {
         setCachedStream(cacheKey, result.openedStream);
