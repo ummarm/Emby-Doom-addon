@@ -447,6 +447,15 @@ function mediaContentTypeLooksUsable(contentType) {
     || normalizedType.includes("webm");
 }
 
+function contentRangeTotalBytes(contentRange) {
+  const match = String(contentRange || "").match(/^bytes\s+\d+-\d+\/(\d+)$/i);
+  if (!match) {
+    return 0;
+  }
+  const total = Number(match[1]);
+  return Number.isSafeInteger(total) && total > 0 ? total : 0;
+}
+
 function cacheKeyForRequest(streamRequest, profile, slot) {
   return `${streamRequest.type}:${streamRequest.id}:${profile}:${slot}`;
 }
@@ -583,12 +592,17 @@ async function probeSeekableStream(stream) {
 
     const contentRange = response.headers.get("content-range") || "";
     const acceptRanges = response.headers.get("accept-ranges") || "";
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    const totalBytes = contentRangeTotalBytes(contentRange);
     const seekable = response.status === 206
       || /^bytes\s+/i.test(contentRange)
       || /bytes/i.test(acceptRanges);
 
     if (!seekable) {
       return { ok: false, reason: "no byte range support" };
+    }
+    if (!totalBytes && (!Number.isFinite(contentLength) || contentLength <= 4096)) {
+      return { ok: false, reason: "no reliable media length" };
     }
 
     const mediaTypeLooksUsable = String(contentType || "").toLowerCase().startsWith("video/")
@@ -718,7 +732,7 @@ function writeProxyHeaders(response, upstreamResponse, stream) {
   };
 
   for (const name of PASS_THROUGH_HEADERS) {
-    if (name === "content-type" || name === "cache-control") {
+    if (name === "content-type" || name === "cache-control" || name === "content-disposition") {
       continue;
     }
     const value = upstreamResponse.headers.get(name);
@@ -728,9 +742,7 @@ function writeProxyHeaders(response, upstreamResponse, stream) {
   }
 
   const filename = inferFilename(stream);
-  if (filename && !headers["content-disposition"]) {
-    headers["Content-Disposition"] = `inline; filename="${filename}"`;
-  }
+  headers["Content-Disposition"] = `inline; filename="${filename || "stream.mkv"}"`;
 
   response.writeHead(upstreamResponse.status, headers);
 }
@@ -940,7 +952,7 @@ async function proxySelectedStream(request, response, stream) {
       throw new Error("Client closed before first media bytes were delivered");
     }
     bytesSent += firstBuffer.length;
-    console.log(`[Emby] Opened ${stream.name}; firstBuffer=${firstBuffer.length} bytes`);
+    console.log(`[Emby] Opened ${stream.name}; status=${upstreamResponse.status} type=${upstreamResponse.headers.get("content-type") || "unknown"} length=${upstreamResponse.headers.get("content-length") || "unknown"} range=${upstreamResponse.headers.get("content-range") || "none"} firstBuffer=${firstBuffer.length} bytes`);
 
     while (true) {
       const read = await reader.read();
@@ -1047,7 +1059,7 @@ function writeSyntheticHead(response, profile, rangeHeader = "") {
     "Access-Control-Allow-Origin": "*",
     "X-Emby-Doom-Proxied": "1",
     "Accept-Ranges": "bytes",
-    "Content-Type": profile === "4k" ? "video/x-matroska" : "video/mp4",
+    "Content-Type": "video/x-matroska",
     "Content-Length": String(contentLength),
     ...noStoreHeaders()
   };

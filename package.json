@@ -1,7 +1,7 @@
 {
   "name": "emby-doom-addon-v1",
   "private": true,
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "Emby-friendly Doom-addon v1 using a configured FlixNest upstream.",
   "license": "GPL-3.0",
   "engines": {
