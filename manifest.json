@@ -1,8 +1,8 @@
 {
-  "id": "community.embydoom",
-  "version": "1.0.39",
-  "name": "Emby-Doom-addon",
-  "description": "An Emby-friendly Doom-addon fork with clean proxy playback URLs.",
+  "id": "community.embydoom.v1",
+  "version": "1.1.0",
+  "name": "Emby-Doom-addon-v1",
+  "description": "An Emby-friendly Doom-addon v1 using a configured FlixNest upstream.",
   "resources": [
     {
       "name": "stream",

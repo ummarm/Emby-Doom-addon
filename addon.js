@@ -318,6 +318,7 @@ const UMBRELLA_PROVIDER_CODES = {
   "hdhub4u_yoruix": "HDHU Y",
   "flix_streams_emby": "EMB",
   "flix_streams_vegamovies": "VG",
+  "flixnest": "FN",
   "hindmoviez": "HM",
   "movieblast": "MBL",
   "moviebox": "MB",
@@ -440,6 +441,7 @@ function normalizeLanguageText(value) {
     .replace(/\bMoviesDrive\b/ig, "")
     .replace(/\bStreamflix\b/ig, "")
     .replace(/\bFlix-Streams\b/ig, "")
+    .replace(/\bFlixNest\b/ig, "")
     .replace(/\bMedia\s+Library\b/ig, "")
     .replace(/\bEmby\b/ig, "")
     .replace(/\bVegaMovies\b/ig, "")

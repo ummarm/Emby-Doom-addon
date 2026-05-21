@@ -1,9 +1,7 @@
-# Emby-Doom-addon
+# Emby-Doom-addon-v1
 
-Emby-Doom-addon is a separate Emby-focused fork of
-[`ummarm/Doom-addon`](https://github.com/ummarm/Doom-addon). It keeps the normal
-Stremio endpoints, and adds clean Emby playback URLs that select a provider
-stream for Emby.
+Emby-Doom-addon-v1 is a separate Emby-focused fork that uses a configured
+FlixNest / Flix-Streams manifest as its upstream stream source.
 
 Your original Doom-addon repo is not changed.
 

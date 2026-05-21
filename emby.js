@@ -273,6 +273,7 @@ function embyScore(stream, profile) {
   const gb = size / (1024 ** 3);
   const isFlixEmby = text.includes("emb |") || text.includes("flix-streams emby") || text.includes("media library") || text.includes("media lib");
   const isVegaMovies = text.includes("vg |") || text.includes("vegamovies");
+  const isFlixNest = text.includes("fn |") || text.includes("flixnest") || text.includes("debrid vault");
 
   if (text.includes("hindi")) score += 700;
   if (text.includes("dual")) score += 180;
@@ -290,6 +291,7 @@ function embyScore(stream, profile) {
   if (host.includes("wasabisys.com")) score += 100;
   if (host.includes("diskcdn.buzz")) score += 80;
   if (host.includes("moviebox")) score += 80;
+  if (isFlixNest) score += 950;
   if (isFlixEmby) score += 900;
   if (isVegaMovies) score += 500;
   if (host.includes("workers.dev")) score -= 60;
@@ -641,16 +643,27 @@ async function validateRankedStreamsWithLimit(rankedStreams, desiredIndex, valid
 
 function inferContentType(stream, upstreamResponse) {
   const upstreamType = upstreamResponse && upstreamResponse.headers.get("content-type");
-  if (upstreamType) {
+  const normalizedUpstreamType = String(upstreamType || "").toLowerCase();
+  if (upstreamType
+    && (normalizedUpstreamType.startsWith("video/")
+      || normalizedUpstreamType.includes("matroska")
+      || normalizedUpstreamType.includes("mpegurl")
+      || normalizedUpstreamType.includes("mp4")
+      || normalizedUpstreamType.includes("webm"))) {
     return upstreamType;
   }
 
   const text = streamText(stream);
   const url = String(stream.url || "").toLowerCase();
-  if (text.includes(".mp4") || url.includes(".mp4")) return "video/mp4";
-  if (text.includes(".mkv") || url.includes(".mkv")) return "video/x-matroska";
-  if (text.includes(".webm") || url.includes(".webm")) return "video/webm";
-  if (text.includes(".m3u8") || url.includes(".m3u8")) return "application/vnd.apple.mpegurl";
+  const filename = String(stream.behaviorHints && stream.behaviorHints.filename || "").toLowerCase();
+  if (text.includes(".mkv") || url.includes(".mkv") || filename.includes(".mkv")) return "video/x-matroska";
+  if (text.includes(".mp4") || url.includes(".mp4") || filename.includes(".mp4")) return "video/mp4";
+  if (text.includes(".webm") || url.includes(".webm") || filename.includes(".webm")) return "video/webm";
+  if (text.includes(".m3u8") || url.includes(".m3u8") || filename.includes(".m3u8")) return "application/vnd.apple.mpegurl";
+  if (normalizedUpstreamType.includes("force-download") || normalizedUpstreamType.includes("octet-stream")) {
+    return "video/x-matroska";
+  }
+  if (upstreamType) return upstreamType;
   return "application/octet-stream";
 }
 

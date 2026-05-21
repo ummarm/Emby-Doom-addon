@@ -78,7 +78,7 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "PUT_YOUR_TMDB_API_KEY_HERE")
 # Your Emby-Doom-addon base URL. This should point at the Node addon created in
 # this repo, not your original Doom-addon deployment.
 ADDON_PUBLIC_URL = os.environ.get("ADDON_PUBLIC_URL", "https://emby-doom-addon.zxflix.com")
-ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.0.39")
+ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.1.0")
 STRM_URL_VERSION = os.environ.get("STRM_URL_VERSION", f"emby-doom-{ADDON_VERSION}")
 STRM_PATH_TOKEN = re.sub(r"[^A-Za-z0-9._-]+", "-", STRM_URL_VERSION).strip("-")
 

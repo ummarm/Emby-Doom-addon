@@ -1,7 +1,31 @@
 {
-  "name": "Doom-addon",
-  "version": "1.0.39",
+  "name": "Emby-Doom-addon-v1",
+  "version": "1.1.0",
   "scrapers": [
+    {
+      "id": "flixnest",
+      "name": "FlixNest",
+      "description": "Configured Flix-Streams addon from flixnest.app",
+      "version": "1.0.0",
+      "author": "ummarm",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/flixnest.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv",
+        "webm",
+        "m3u8"
+      ],
+      "logo": "https://flixnest.app/flix-streams/static/icon.png",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
     {
       "id": "4khdhub",
       "name": "4KHDHub",
@@ -13,7 +37,7 @@
         "tv"
       ],
       "filename": "providers/4khdhub.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "m3u8"
@@ -34,7 +58,7 @@
         "tv"
       ],
       "filename": "providers/4khdhub_tv.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "m3u8"
@@ -55,7 +79,7 @@
         "tv"
       ],
       "filename": "providers/4khdhub_yoruix.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "m3u8"
@@ -76,7 +100,7 @@
         "tv"
       ],
       "filename": "providers/hdhub4u.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "m3u8"
@@ -97,7 +121,7 @@
         "tv"
       ],
       "filename": "providers/hdhub4u_murph.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -120,7 +144,7 @@
         "tv"
       ],
       "filename": "providers/hdhub4u_yoruix.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -143,7 +167,7 @@
         "tv"
       ],
       "filename": "providers/flix_streams_emby.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -166,7 +190,7 @@
         "tv"
       ],
       "filename": "providers/flix_streams_vegamovies.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -189,7 +213,7 @@
         "tv"
       ],
       "filename": "providers/hindmoviez.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -212,7 +236,7 @@
         "tv"
       ],
       "filename": "providers/movieblast.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -237,7 +261,7 @@
         "tv"
       ],
       "filename": "providers/4khdhub_murph.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -260,7 +284,7 @@
         "tv"
       ],
       "filename": "providers/moviebox.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -283,7 +307,7 @@
         "tv"
       ],
       "filename": "providers/moviesdrive.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "mkv",
@@ -306,7 +330,7 @@
         "tv"
       ],
       "filename": "providers/streamflix.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mp4",
         "m3u8"
