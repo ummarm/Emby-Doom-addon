@@ -78,7 +78,7 @@ TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "PUT_YOUR_TMDB_API_KEY_HERE")
 # Your Emby-Doom-addon base URL. This should point at the Node addon created in
 # this repo, not your original Doom-addon deployment.
 ADDON_PUBLIC_URL = os.environ.get("ADDON_PUBLIC_URL", "https://emby-doom-addon.zxflix.com")
-ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.1.0")
+ADDON_VERSION = os.environ.get("ADDON_VERSION", "1.1.1")
 STRM_URL_VERSION = os.environ.get("STRM_URL_VERSION", f"emby-doom-{ADDON_VERSION}")
 STRM_PATH_TOKEN = re.sub(r"[^A-Za-z0-9._-]+", "-", STRM_URL_VERSION).strip("-")
 
@@ -332,6 +332,7 @@ def strm_query(profile: str, slot: int) -> str:
         "profile": profile,
         "slot": str(slot),
         "v": STRM_URL_VERSION,
+        "mode": "proxy",
     })
 
 
@@ -352,6 +353,7 @@ def media_style_strm_url(value: str) -> str:
     query["profile"] = [profile]
     query.setdefault("slot", ["1"])
     query["v"] = [STRM_URL_VERSION]
+    query["mode"] = ["proxy"]
     new_query = urlencode(query, doseq=True)
 
     movie_match = re.match(r"^/emby/movie/(tt\d+)(?:/[^/]+\.(?:mkv|mp4|webm))?$", parts.path, re.I)

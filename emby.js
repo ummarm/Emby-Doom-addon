@@ -61,7 +61,7 @@ const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
 const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 10);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
 const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 240000);
-const EMBY_DEFAULT_MODE = String(process.env.EMBY_DEFAULT_MODE || "auto").toLowerCase();
+const EMBY_DEFAULT_MODE = String(process.env.EMBY_DEFAULT_MODE || "proxy").toLowerCase();
 const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
   "flix_streams_emby",
   "flix_streams_vegamovies",
