@@ -53,14 +53,16 @@ const PASS_THROUGH_HEADERS = [
 
 const UPSTREAM_OPEN_TIMEOUT_MS = Number(process.env.UPSTREAM_OPEN_TIMEOUT_MS || 12000);
 const FIRST_CHUNK_TIMEOUT_MS = Number(process.env.FIRST_CHUNK_TIMEOUT_MS || 8000);
-const FIRST_MEDIA_BUFFER_BYTES = Number(process.env.FIRST_MEDIA_BUFFER_BYTES || 65536);
+const FIRST_MEDIA_BUFFER_BYTES = Number(process.env.FIRST_MEDIA_BUFFER_BYTES || 4096);
 const SEEK_PROBE_TIMEOUT_MS = Number(process.env.SEEK_PROBE_TIMEOUT_MS || 6000);
+const SYNTHETIC_HEAD_1080_BYTES = Number(process.env.SYNTHETIC_HEAD_1080_BYTES || 12 * 1024 ** 3);
+const SYNTHETIC_HEAD_4K_BYTES = Number(process.env.SYNTHETIC_HEAD_4K_BYTES || 45 * 1024 ** 3);
 const EMBY_RESOLVE_TIMEOUT_MS = Number(process.env.EMBY_RESOLVE_TIMEOUT_MS || 32000);
 const EMBY_PROVIDER_TIMEOUT_MS = Number(process.env.EMBY_PROVIDER_TIMEOUT_MS || 30000);
 const EMBY_MIN_CANDIDATES = Number(process.env.EMBY_MIN_CANDIDATES || 12);
 const EMBY_VALIDATE_CANDIDATES = Number(process.env.EMBY_VALIDATE_CANDIDATES || 10);
 const EMBY_VALIDATE_CONCURRENCY = Number(process.env.EMBY_VALIDATE_CONCURRENCY || 8);
-const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 240000);
+const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 45000);
 const EMBY_DEFAULT_MODE = String(process.env.EMBY_DEFAULT_MODE || "proxy").toLowerCase();
 const EMBY_PROVIDER_IDS = String(process.env.EMBY_PROVIDER_IDS || [
   "flix_streams_emby",
@@ -1034,14 +1036,27 @@ async function proxyFirstWorkingStream(request, response, rankedStreams, options
   return { openedStream: null, errors };
 }
 
-function writeSyntheticHead(response, profile) {
-  response.writeHead(200, {
+function writeSyntheticHead(response, profile, rangeHeader = "") {
+  const totalBytes = profile === "4k" ? SYNTHETIC_HEAD_4K_BYTES : SYNTHETIC_HEAD_1080_BYTES;
+  const range = parseRangeHeader(rangeHeader);
+  const statusCode = range && range.start !== null ? 206 : 200;
+  const start = range && range.start !== null ? range.start : 0;
+  const end = range && range.end !== null ? Math.min(range.end, totalBytes - 1) : totalBytes - 1;
+  const contentLength = statusCode === 206 ? Math.max(0, end - start + 1) : totalBytes;
+  const headers = {
     "Access-Control-Allow-Origin": "*",
     "X-Emby-Doom-Proxied": "1",
     "Accept-Ranges": "bytes",
     "Content-Type": profile === "4k" ? "video/x-matroska" : "video/mp4",
+    "Content-Length": String(contentLength),
     ...noStoreHeaders()
-  });
+  };
+
+  if (statusCode === 206) {
+    headers["Content-Range"] = `bytes ${start}-${end}/${totalBytes}`;
+  }
+
+  response.writeHead(statusCode, headers);
   response.end();
 }
 
@@ -1199,7 +1214,6 @@ async function handleHeadPlayback(request, response, streamRequest, profile, slo
 
   const result = await resolveBestStreamForPlayback(streamRequest, profile, slot);
   if (result.selected) {
-    setCachedStream(cacheKey, result.selected);
     console.log(`[Emby] HEAD resolved ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot} -> ${result.selected.name}`);
     if (mode === "redirect") {
       redirectToStream(response, result.selected);
@@ -1248,8 +1262,8 @@ async function handleEmbyPlayback(request, response, streamRequest) {
   const cachedStream = getCachedStream(cacheKey);
 
   if (request.method === "HEAD") {
-    triggerPrewarm(streamRequest, profile, slot, cacheKey);
-    await handleHeadPlayback(request, response, streamRequest, profile, slot, mode, cacheKey, cachedStream);
+    console.log(`[Emby] Fast HEAD ${streamRequest.type} ${streamRequest.id} profile=${profile} slot=${slot}`);
+    writeSyntheticHead(response, profile, request.headers.range || "");
     return;
   }
 
