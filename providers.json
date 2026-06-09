@@ -1,6 +1,6 @@
 {
   "name": "Emby-Doom-addon-v1",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "scrapers": [
     {
       "id": "flixnest",
@@ -72,7 +72,7 @@
       "id": "4khdhub_yoruix",
       "name": "4KHDHub Yoruix",
       "description": "Alternate 4KHDHub implementation synced from yoruix/nuvio-providers",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "author": "ummarm",
       "supportedTypes": [
         "movie",
@@ -137,7 +137,7 @@
       "id": "hdhub4u_yoruix",
       "name": "HDHub4u Yoruix",
       "description": "Alternate HDHub4u implementation synced from yoruix/nuvio-providers",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "author": "ummarm",
       "supportedTypes": [
         "movie",
