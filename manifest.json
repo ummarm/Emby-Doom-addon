@@ -1,6 +1,6 @@
 {
   "id": "community.embydoom.v1",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "name": "Doom-addon",
   "description": "A Stremio stream add-on wrapping the Doom-addon provider set: FlixNest, 4KHDHub, 4khdhub-tv, 4KHDHub Yoruix, HDHub4u, HDHub4u Murph, HDHub4u Yoruix, Flix-Streams Emby, Flix-Streams VegaMovies, HindMoviez, MovieBlast, 4KHDHub Murph, MovieBox, MoviesDrive, Streamflix.",
   "resources": [
