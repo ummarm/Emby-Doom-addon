@@ -1,7 +1,7 @@
 {
   "name": "emby-doom-addon-v1",
   "private": true,
-  "version": "1.1.9",
+  "version": "1.1.10",
   "description": "Doom-addon: a Stremio stream add-on with FlixNest, 4KHDHub, 4khdhub-tv, 4KHDHub Yoruix, HDHub4u, HDHub4u Murph, HDHub4u Yoruix, Flix-Streams Emby, Flix-Streams VegaMovies, HindMoviez, MovieBlast, 4KHDHub Murph, MovieBox, MoviesDrive, Streamflix.",
   "license": "GPL-3.0",
   "engines": {
