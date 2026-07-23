@@ -1,6 +1,6 @@
 {
   "name": "Emby-Doom-addon-v1",
-  "version": "1.1.15",
+  "version": "1.1.16",
   "scrapers": [
     {
       "id": "flixnest",
@@ -277,7 +277,7 @@
       "id": "moviebox",
       "name": "MovieBox",
       "description": "MovieBox - Worker-backed direct streams for movies and TV",
-      "version": "1.0.12",
+      "version": "1.0.13",
       "author": "ummarm",
       "supportedTypes": [
         "movie",
